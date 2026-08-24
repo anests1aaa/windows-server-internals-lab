@@ -175,8 +175,9 @@ qemu-system-i386 -m 64 -hda nt31.img -boot c -M pc,acpi=off -cpu 486
 
 ## Próximos pasos del proyecto
 
-- [ ] Configurar `I386KD.EXE` (kernel debugger nativo de NT 3.x) con símbolos desde `SUPPORT\DEBUG\I386\SYMBOLS` del CD
-- [ ] Armar sesión de debug remoto vía puerto serie virtual (dos VMs conectadas por socket TCP en QEMU)
+- [x] Configurar `I386KD.EXE` (kernel debugger nativo de NT 3.x) con símbolos desde `SUPPORT\DEBUG\I386\SYMBOLS` del CD
+- [x] Armar sesión de debug remoto vía puerto serie virtual (dos VMs conectadas por socket TCP en QEMU)
+  → Ver [02-kernel-debugger-setup.md](./02-kernel-debugger-setup.md) para el proceso completo.
 - [ ] Verificar en vivo las estructuras del Object Manager / I/O Manager descritas en *Inside Windows NT*
 - [ ] Repetir el proceso para NT 3.51, NT 4.0, Windows 2000 Server, Server 2003... siguiendo la bibliografía completa
 

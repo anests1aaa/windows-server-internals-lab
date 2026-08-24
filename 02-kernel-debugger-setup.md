@@ -179,7 +179,6 @@ ChildEBP RetAddr
 
 - **Baud rate:** hay reportes conocidos de que algunos emuladores modernos envían datos más rápido de lo esperado a 19200 baudios, causando que el debugger parezca colgado en "waiting to connect". Si pasa, esperar unos segundos antes de asumir fallo.
 - **VM debugger con warning al arrancar:** al clonar el disco, la copia puede mostrar *"At least one service or driver failed during system startup"* — es esperable por diferencias mínimas de detección de hardware entre el disco original y la copia; no afecta el uso de `I386KD.EXE`, se puede descartar con OK.
-- **maim + atajos de i3:** si se necesita cambiar de workspace con `$mod+número` antes de hacer una captura con `maim -s`, hay que anteponer un delay (`sleep 3 && maim -s archivo.png`) para no cancelar la selección al tocar el teclado.
 
 ## Estado del lab a partir de acá
 
