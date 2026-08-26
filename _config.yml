@@ -1,0 +1,7 @@
+title: Windows NT 3.1 — Research Lab
+description: Laboratorio de reversing de Windows NT 3.1 en QEMU, verificando en vivo los conceptos de "Inside Windows NT" (Helen Custer, 1992)
+lang: es
+
+theme: jekyll-theme-hacker
+
+markdown: kramdown

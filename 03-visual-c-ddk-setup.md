@@ -1,3 +1,8 @@
+---
+layout: default
+title: Fase 3 — Visual C++ y DDK
+---
+
 # Fase 3 — Instalación de Visual C++ 1.10 for NT y DDK (toolchain de compilación de drivers)
 
 Continuación de [README.md](./README.md) (instalación base) y [02-kernel-debugger-setup.md](./02-kernel-debugger-setup.md) (kernel debugger). Esta fase documenta cómo armar el toolchain completo de compilación para poder escribir y compilar drivers de kernel contra NT 3.1, verificando después su comportamiento en vivo con `I386KD.EXE`.

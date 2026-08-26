@@ -1,3 +1,8 @@
+---
+layout: default
+title: Instalación base
+---
+
 # Windows NT 3.1 Advanced Server — Lab de Reversing en QEMU
 
 Documentación del proceso completo de instalación de **Windows NT 3.1 Advanced Server (build 3.10.5098.1)** en QEMU/KVM sobre Arch Linux, como base para el estudio de *Inside Windows NT* (Helen Custer, 1992) y el proyecto más amplio de investigar los internals de Windows Server a través de sus distintas versiones.

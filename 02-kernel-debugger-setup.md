@@ -1,3 +1,8 @@
+---
+layout: default
+title: Fase 2 — Kernel Debugger
+---
+
 # Fase 2 — Configuración del Kernel Debugger (I386KD.EXE)
 
 Continuación de [README.md](./README.md) (instalación base de NT 3.1 Advanced Server). Esta fase documenta cómo conectar un kernel debugger real a la VM instalada, para poder verificar en vivo los conceptos que describe *Inside Windows NT* (Helen Custer, 1992).
