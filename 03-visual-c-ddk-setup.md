@@ -160,15 +160,203 @@ C:\SETDDK.BAT
 | `virt-copy-out` sin inspección manual | `no operating system was found on this disk` | El inspector automático de libguestfs no reconoce NT 3.1 como SO instalado |
 | `guestfish` + `mount-ro` manual | Mismo error de superbloque que `guestmount` | Confirma que el problema es el driver NTFS, no la herramienta específica |
 
+## Corrección: el entorno de build real es `SETENV.BAT`, no variables sueltas
+
+El primer `SETDDK.BAT` armado a mano (`set INCLUDE=...`, `set LIB=...`) resultó insuficiente. El `MAKEFILE` de cualquier sample del DDK depende de un entorno de build completo, indicado por esta línea:
+
+```
+!INCLUDE $(NTMAKEENV)\makefile.def
+```
+
+`NTMAKEENV`, `BASEDIR`, `DDKBUILDENV`, `BUILD_DEFAULT_TARGETS`, etc. las setea el script oficial del DDK, `DDK/BIN/SETENV.BAT` — que además detecta la arquitectura vía la variable `PROCESSOR_ARCHITECTURE` (ya seteada por NT, confirmada en `x86`).
+
+`SETDDK.BAT` final, combinando Visual C++ + el entorno oficial del DDK + el `PATH` a `BUILD.EXE` (que `SETENV.BAT` no agrega solo — solo suma `%BASEDIR%\bin`, no la subcarpeta específica de arquitectura donde vive el binario real):
+
+```batch
+@echo off
+call C:\MSVCNT\BIN\VCVARS32.BAT
+call C:\DD\DD\BIN\SETENV.BAT C:\DD\DD free
+set PATH=C:\DD\DD\BIN\I386\FREE;%PATH%
+```
+
+> **Nota sobre `C:\DD\DD`:** el DDK terminó copiado con esa estructura (carpeta duplicada) por un detalle del "Move" hecho desde el File Manager al pasar `D:\DD` (el disco intermedio del ISO) a `C:\DD` — el resultado fue `C:\DD\DD\...` en vez de `C:\DD\...`. No afecta nada funcionalmente, solo hay que tenerlo en cuenta en cualquier ruta.
+
+Con esto, `BASEDIR=C:\DD\DD`, `NTMAKEENV=C:\DD\DD\INC`, `DDKBUILDENV=free` — confirmado con `echo` de cada variable.
+
+## Primer build exitoso: `INPORT.SYS`
+
+Como candidato para la primera compilación de prueba se descartaron los samples de `krnldbg` (son herramientas del propio debugger — `kdapis` es la librería del protocolo de comunicación serial, `kdexts` son extensiones para `i386kd`/`windbg`, ninguno es un driver de carga real) y se comparó tamaño de fuente entre `comm\oldpar` (73KB, con message compiler aparte) y `input\inport` (94KB en dos `.C`, sin piezas de build adicionales). Se eligió **`INPORT`** — driver del mouse serie "InPort" (bus mouse propietario Microsoft/ATI de los 90).
+
+```
+cd C:\DD\DD\SRC\INPUT\INPORT
+build
+```
+
+Resultado:
+```
+BUILD: Compile and Link for i386
+BUILD: Computing Include file dependencies:
+BUILD: Examining c:\dd\dd\src\input\inport directory for files to compile.
+- 3 source files (97,788 lines)
+BUILD: Compiling c:\dd\dd\src\input\inport directory
+Compiling - inport.rc for Unknown Target
+Compiling - i386\inpcmn.c for i386
+Compiling - i386\inpdep.c for i386
+BUILD: Linking c:\dd\dd\src\input\inport directory
+Linking Executable - C:\DD\DD\lib\i386\free\inport.sys for i386
+BUILD: Done
+
+    3 files compiled - 97564 LPS
+    1 executables built
+```
+
+Toolchain confirmado de punta a punta: `CL386` compiló contra los headers del DDK, `LINK32` generó `INPORT.SYS` — un driver real de kernel. No se generaron símbolos (`INPORT.DBG`) a pesar de `NTDBGFILES=1` en `SETENV.BAT` — relevante para la sesión de debugging más abajo.
+
+## ⚠️ Incidente: `INACCESSIBLE_BOOT_DEVICE` en `nt31.img`
+
+Al reiniciar la VM target (`nt31.img`) para continuar con la carga del driver, el sistema no bootea más — pantalla azul `STOP: 0x0000007B — INACCESSIBLE_BOOT_DEVICE`, tanto en la entrada `[DEBUG]` como en la normal del menú de boot. Los drivers de disco (`Atdisk.sys`, `Ftdisk.sys`) cargan bien; el fallo ocurre al intentar montar el volumen NTFS.
+
+**Causa más probable:** apagados abruptos de VMs (cerrar la ventana de QEMU en vez de un shutdown prolijo) en algún punto de una sesión larga con mucho intercambio de discos y ventanas — tolerable en las VMs de DOS puro usadas para los discos intermedios, pero `nt31.img` tiene `C:` en **NTFS**, sensible a corrupción de metadata (MFT, boot sector) ante un corte sucio.
+
+**Intento de reparación vía Emergency Repair Disk:** se rearmó el flujo completo de reparación de NT 3.1 (`bootdisk.img` como Setup Boot Disk → tecla `R` en la pantalla de bienvenida → inserción del ERD) — pero el proceso de reparación en sí también requiere un CD-ROM SCSI reconocido para verificar contra los archivos originales, y ahí vuelve a aparecer el bug de origen del proyecto (sin chip SCSI de 1993 emulado por QEMU, ni para instalar ni para reparar). `ENTER` no avanza más allá de esa pantalla — bloqueo duro, sin salida por este camino.
+
+**Solución aplicada: restaurar clonando desde `nt31-debugger.img`** (que seguía sano, y que en la Fase 2 se había clonado *desde* `nt31.img` después de la edición del `BOOT.INI` con la entrada `[DEBUG]`):
+
+```bash
+mv nt31.img nt31-broken.img
+cp nt31-debugger.img nt31.img
+```
+
+Efecto colateral (sin impacto funcional, solo de prolijidad del lab): al ser clon de la VM debugger, `nt31.img` restaurado hereda también `C:\MSVCNT` y `C:\DD\DD` — las dos VMs dejaron de tener el diseño original "target liviana vs. debugger con herramientas" y pasaron a ser equivalentes en contenido.
+
+## Carga del driver como servicio (sin tocar el mouse real)
+
+Para no arriesgar el mouse emulado de la VM, `INPORT.SYS` se registró como servicio nuevo e independiente, con arranque **manual** (no automático), usando `REGINI.EXE` (ya presente en el DDK clonado):
+
+```
+\Registry\Machine\System\CurrentControlSet\Services\TestInport
+    Type = REG_DWORD 0x00000001
+    Start = REG_DWORD 0x00000003
+    ErrorControl = REG_DWORD 0x00000001
+    ImagePath = REG_SZ System32\Drivers\INPORT.SYS
+```
+
+> `Start=3` es `SERVICE_DEMAND_START` — la escala de `Start` en el registro de NT es *menor = más automático/temprano* (`0`=boot, `1`=system, `2`=auto, `3`=manual/demand, `4`=disabled), no al revés.
+
+```
+C:\DD\DD\BIN\I386\FREE\REGINI.EXE C:\INPORT.INI
+```
+
+Confirmado en `REGEDT32.EXE`, clave `HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\TestInport` con los 4 valores esperados.
+
+`INPORT.SYS` copiado a `C:\WINNT\SYSTEM32\DRIVERS\` en la VM target — dato importante confirmado en la práctica: **copiar el `.SYS` a esa carpeta no lo carga por sí solo**; solo la entrada de registro (`Start`) decide si y cuándo arranca.
+
+## Sesión de debugging en vivo: verificando la carga real del driver
+
+Con las dos VMs conectadas por serial (mismo patrón de la Fase 2 — `nt31.img` como servidor del socket, `nt31-debugger.img` como cliente), se puso en evidencia un problema de orden de arranque: si el cliente (`-serial tcp:127.0.0.1:4555`) arranca **antes** que el servidor (`-serial tcp::4555,server,nowait`), la conexión queda muerta silenciosamente — QEMU no reintenta solo. Solución aplicada: reiniciar el cliente después de confirmar que el servidor ya está arriba (la versión de QEMU usada no soportó el parámetro `reconnect=`/`reconnect-ms=` para automatizar esto).
+
+Otro problema de timing: el menú de boot de NT (`timeout=30` en `BOOT.INI`) hacía perder la ventana para elegir manualmente la entrada `[DEBUG]` con las flechas. Solución: reordenar `BOOT.INI`, poniendo la entrada `[DEBUG]` completa (string + switches) como `default=`, con `timeout` reducido — así arranca en modo debug sin intervención. Un detalle de QEMU a tener en cuenta: **`system_reset` desde el monitor preserva la relectura correcta del `BOOT.INI` editado**; un apagado y reencendido completo del proceso, en un intento anterior de la sesión, no lo hizo de forma consistente.
+
+### El mensaje "Unable to load debug information" no era transitorio
+
+En la Fase 2 se había asumido que ese mensaje se resolvía solo tras la primera interrupción real — resultó ser una asunción incorrecta nunca puesta a prueba: los comandos usados entonces para "confirmar" (`r`, `k`) no requieren símbolos para funcionar. Con símbolos realmente no cargados, comandos que sí dependen de ellos (`x nt!IopLoad*`, `ln eip`) no devolvían nada.
+
+**Causa encontrada:** `C:\SYMBOLS` tenía los `.DBG` copiados sueltos en la raíz, pero `I386KD` espera la estructura por tipo de archivo del CD original (`SYMBOLS\EXE\`, `SYMBOLS\DLL\`, etc.):
+
+```
+mkdir C:\SYMBOLS\EXE
+mkdir C:\SYMBOLS\DLL
+copy C:\SYMBOLS\NTOSKRNL.DBG C:\SYMBOLS\EXE\
+copy C:\SYMBOLS\HAL.DBG C:\SYMBOLS\DLL\
+```
+
+Confirmado al reiniciar `i386kd`: `KD: Preloading kernel symbols from C:\SYMBOLS\exe\ntoskrnl.DBG` (sin el "Unable to load" previo), y el break automático mostrando nombre simbólico real: `NT!_KeUpdateSystemTime+0x109`.
+
+### Localizar el punto de carga del driver sin símbolos propios de `INPORT.SYS`
+
+Como el build no generó `INPORT.DBG`, se usó una función del **kernel** (con símbolos vía `NTOSKRNL.DBG`) que se ejecuta en cualquier carga de driver: `NT!_IopLoadDriver`, encontrada vía búsqueda de wildcard:
+
+```
+kd> x nt!IopLoad*
+80188770  NT!_IopLoadDriver
+801452d6  NT!_IopLoadFileSystemDriver
+801882b0  NT!_IopLoadUnloadDriver
+```
+
+```
+kd> bp NT!_IopLoadDriver
+kd> g
+```
+
+Disparado desde la VM target con `net start TestInport`, el breakpoint pegó, confirmando en el stack trace (`k`) la cadena completa que describe *Inside Windows NT* sobre el I/O Manager: la carga de un driver corre en un **worker thread del sistema**, asíncrono respecto al proceso que la solicitó —
+
+```
+NT!_PspSystemThreadStartup+0x50
+  → NT!_ExpWorkerThread+0x88
+    → NT!_IopLoadUnloadDriver+0x57
+      → NT!_IopLoadDriver
+```
+
+### Delimitar el rango de una función sin símbolos de tamaño (técnica: `ln` sobre el nombre)
+
+Para poder desensamblar la función completa sin pasarse a la siguiente ni quedarse corto, usar `ln` con el nombre simbólico (sin offset) devuelve los dos símbolos más cercanos — el propio y el siguiente en el binario — delimitando el rango exacto:
+
+```
+kd> ln nt!_IopLoadDriver
+(80188770)  NT!_IopLoadDriver  |  (80188d40)  NT!_IopReadyDeviceObjects
+```
+
+Rango de `IopLoadDriver`: `80188770` a `80188d3F` (tamaño `0x5D0`). Desensamblado completo, redirigido a log para evitar el scroll de la consola:
+
+```
+kd> .logopen C:\iopload.log
+kd> u 80188770 L5d0
+kd> .logclose
+```
+
+Log extraído por disquete al host (mismo mecanismo de `mtools` de toda la fase) y analizado con `grep`/`awk` filtrando por rango de direcciones, para descartar contaminación de funciones vecinas capturadas en el mismo log.
+
+**Hallazgo:** `IopLoadDriver` no llama a `IoCreateFile`/`ZwOpenFile` directamente — delega la apertura y el mapeo del binario a `NT!_MmLoadSystemImage` (Memory Manager), un nivel de abstracción más abajo de lo esperado. Confirma en la práctica la separación de responsabilidades entre componentes del Executive que describe el libro: el I/O Manager arma el path a partir del registro, pero es el Memory Manager quien efectivamente abre y mapea el archivo.
+
+También se confirmó, filtrando el desensamblado por rango de direcciones (todos los saltos de error convergen a `jmp +0x587`), que **la función tiene un único punto real de salida** — patrón de epílogo único común en el código de esta era.
+
+### Lectura en vivo del `UNICODE_STRING` con el path del driver
+
+Breakpoint puesto justo antes de la llamada al Memory Manager:
+
+```
+kd> bp 80188a64      ; call NT!_MmLoadSystemImage
+kd> g
+```
+
+(disparado de nuevo con `net start TestInport` / `net stop TestInport` desde la VM target)
+
+Con el breakpoint activo, los argumentos ya armados en el stack (`dd esp L10`) muestran un puntero a una `UNICODE_STRING` local (estructura de 8 bytes: `Length`+`MaximumLength` empaquetados + puntero a `Buffer`):
+
+```
+kd> dd fe37bed4 L2
+kd> du fe747b28
+fe747b28   "\SystemRoot\System32\Drivers\INP"
+fe747b68   "ORT.SYS"
+```
+
+**Confirmación en vivo, en memoria del kernel real:** `\SystemRoot\System32\Drivers\INPORT.SYS` — el path completo armado por `IopLoadDriver` a partir de la clave de registro, justo antes de pasarlo al Memory Manager para el mapeo real del binario.
+
+### Resultado funcional de la carga
+
+`net start TestInport` retorna `System error 20 — The system cannot find the device specified`. Resultado esperado y correcto: `INPORT.SYS` es el driver de un bus mouse propietario que QEMU no emula — el binario compila, carga, ejecuta su `DriverEntry`, busca el hardware físico InPort, no lo encuentra, y falla limpiamente. Confirma que el toolchain completo (compilación + carga + ejecución en kernel real) funciona de punta a punta; el único punto de falla es la ausencia del hardware específico, no del software.
+
 ## Próximos pasos del proyecto
 
 - [x] Instalar Visual C++ 1.10 for NT (compilador i386) en la VM debugger
 - [x] Instalar DDK de NT 3.x (headers, libs, samples, `BUILD.EXE`)
 - [x] Resolver acceso a archivos de una VM con `C:` en NTFS desde el host (vía disquete FAT + `mtools`, dado que `libguestfs` no soporta NTFS v1.0)
-- [x] Armar `SETDDK.BAT` combinando entorno de Visual C++ + DDK
-- [ ] Compilar un primer sample simple de `DDK/SRC` con `BUILD.EXE` como prueba de humo del toolchain completo
-- [ ] Cargar el driver resultante en la VM objetivo y verificar su comportamiento en vivo con `I386KD.EXE`
-- [ ] Verificar en vivo las estructuras del Object Manager / I/O Manager descritas en *Inside Windows NT* (pendiente del README original)
+- [x] Armar `SETDDK.BAT` combinando entorno de Visual C++ + DDK (usando el `SETENV.BAT` oficial del DDK)
+- [x] Compilar un primer driver real (`INPORT.SYS`) con `BUILD.EXE` como prueba de humo del toolchain completo
+- [x] Recuperar `nt31.img` de un `INACCESSIBLE_BOOT_DEVICE` (clonado desde `nt31-debugger.img`, ante el límite estructural del ERD con el mismo bug de CD-ROM SCSI del proyecto)
+- [x] Cargar el driver como servicio (`REGINI.EXE`, arranque manual) y verificar en vivo con `I386KD.EXE` — breakpoint en `NT!_IopLoadDriver`, delimitación de función sin símbolos propios (`ln` sobre nombre), hallazgo de `MmLoadSystemImage` como responsable real de abrir el archivo, y lectura del `UNICODE_STRING` con el path completo del driver en memoria del kernel
+- [ ] Repetir la verificación en vivo con un driver que sí tenga hardware compatible con QEMU (para ver una carga exitosa completa, no solo hasta el fallo de "device not found")
+- [ ] Verificar en vivo otras estructuras del Object Manager / I/O Manager descritas en *Inside Windows NT* (pendiente del README original)
 
 ## Créditos y fuentes
 

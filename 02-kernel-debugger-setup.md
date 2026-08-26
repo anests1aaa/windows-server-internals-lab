@@ -143,7 +143,7 @@ KD: baud rate reset to 19200
 KD: Kernel Debugger connection established.
 ```
 
-> El mensaje "Unable to load debug information" en este punto es normal — se resuelve una vez que hay una interrupción real y el debugger puede leer qué build exacta está corriendo del otro lado.
+> ⚠️ **Corrección (ver Fase 3):** en su momento se asumió que el mensaje "Unable to load debug information" se resolvía solo tras la primera interrupción — pero esa conclusión nunca se puso a prueba realmente, porque los comandos usados para "confirmar" en el Paso 9 (`r`, `k`) no dependen de símbolos para funcionar. En la Fase 3 se descubrió la causa real: `I386KD` espera los `.DBG` organizados en subcarpetas por tipo de archivo (`C:\SYMBOLS\EXE\`, `C:\SYMBOLS\DLL\`), no sueltos en la raíz de `C:\SYMBOLS` como se dejaron acá. Ver [03-visual-c-ddk-setup.md](./03-visual-c-ddk-setup.md) para el diagnóstico completo y la corrección — recomendado aplicar esa estructura de subcarpetas ya en este paso para evitar el problema desde el principio.
 
 ## Paso 9: Forzar un break e interactuar con el kernel en vivo
 
@@ -162,6 +162,8 @@ Esto detiene la ejecución del kernel remoto en el punto exacto donde estaba, y 
 | `?` | Lista completa de comandos disponibles |
 | `r` | Estado de los registros de la CPU en el instante del break |
 | `k` | Stack trace (pila de llamadas) actual |
+
+> Nota: ni `r` ni `k` requieren símbolos cargados para funcionar (son datos crudos: registros y direcciones en hex). Que ambos funcionen bien **no** es prueba de que los símbolos hayan cargado correctamente — para eso hace falta un comando que sí dependa de ellos, como `ln <dirección>` (ver Fase 3).
 
 Ejemplo de sesión real:
 ```

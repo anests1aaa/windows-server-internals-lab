@@ -178,7 +178,10 @@ qemu-system-i386 -m 64 -hda nt31.img -boot c -M pc,acpi=off -cpu 486
 - [x] Configurar `I386KD.EXE` (kernel debugger nativo de NT 3.x) con símbolos desde `SUPPORT\DEBUG\I386\SYMBOLS` del CD
 - [x] Armar sesión de debug remoto vía puerto serie virtual (dos VMs conectadas por socket TCP en QEMU)
   → Ver [02-kernel-debugger-setup.md](./02-kernel-debugger-setup.md) para el proceso completo.
-- [ ] Verificar en vivo las estructuras del Object Manager / I/O Manager descritas en *Inside Windows NT*
+- [x] Instalar toolchain de compilación de drivers (Visual C++ 1.10 for NT + DDK), compilar un primer driver real y verificar su carga en vivo con `I386KD.EXE`
+  → Ver [03-visual-c-ddk-setup.md](./03-visual-c-ddk-setup.md) para el proceso completo.
+- [ ] Repetir la verificación en vivo con un driver que tenga hardware compatible con QEMU (para ver una carga exitosa completa)
+- [ ] Verificar en vivo otras estructuras del Object Manager / I/O Manager descritas en *Inside Windows NT*
 - [ ] Repetir el proceso para NT 3.51, NT 4.0, Windows 2000 Server, Server 2003... siguiendo la bibliografía completa
 
 ## Créditos y fuentes
