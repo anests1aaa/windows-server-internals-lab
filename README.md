@@ -2,10 +2,6 @@
 
 Documentación del proceso completo de instalación de **Windows NT 3.1 Advanced Server (build 3.10.5098.1)** en QEMU/KVM sobre Arch Linux, como base para el estudio de *Inside Windows NT* (Helen Custer, 1992) y el proyecto más amplio de investigar los internals de Windows Server a través de sus distintas versiones.
 
-## Objetivo del proyecto
-
-Estudiar la arquitectura interna de Windows NT/Server desde su primera versión (1993) hasta la actualidad, usando la serie de libros *Windows Internals* (Custer → Solomon → Russinovich/Ionescu) como guía, y verificando lo que describen contra un kernel real corriendo en un entorno de laboratorio reproducible.
-
 ## Host
 
 - **Sistema operativo:** Arch Linux
