@@ -7,10 +7,6 @@ title: Instalación base
 
 Documentación del proceso completo de instalación de **Windows NT 3.1 Advanced Server (build 3.10.5098.1)** en QEMU/KVM sobre Arch Linux, como base para el estudio de *Inside Windows NT* (Helen Custer, 1992) y el proyecto más amplio de investigar los internals de Windows Server a través de sus distintas versiones.
 
-## Objetivo del proyecto
-
-Estudiar la arquitectura interna de Windows NT/Server desde su primera versión (1993) hasta la actualidad, usando la serie de libros *Windows Internals* (Custer → Solomon → Russinovich/Ionescu) como guía, y verificando lo que describen contra un kernel real corriendo en un entorno de laboratorio reproducible.
-
 ## Host
 
 - **Sistema operativo:** Arch Linux
@@ -185,9 +181,7 @@ qemu-system-i386 -m 64 -hda nt31.img -boot c -M pc,acpi=off -cpu 486
   → Ver [02-kernel-debugger-setup.md](./02-kernel-debugger-setup.md) para el proceso completo.
 - [x] Instalar toolchain de compilación de drivers (Visual C++ 1.10 for NT + DDK), compilar un primer driver real y verificar su carga en vivo con `I386KD.EXE`
   → Ver [03-visual-c-ddk-setup.md](./03-visual-c-ddk-setup.md) para el proceso completo.
-- [ ] Repetir la verificación en vivo con un driver que tenga hardware compatible con QEMU (para ver una carga exitosa completa)
-- [ ] Verificar en vivo otras estructuras del Object Manager / I/O Manager descritas en *Inside Windows NT*
-- [ ] Repetir el proceso para NT 3.51, NT 4.0, Windows 2000 Server, Server 2003... siguiendo la bibliografía completa
+
 
 ## Créditos y fuentes
 
