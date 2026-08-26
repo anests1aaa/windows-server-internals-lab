@@ -355,8 +355,7 @@ fe747b68   "ORT.SYS"
 - [x] Compilar un primer driver real (`INPORT.SYS`) con `BUILD.EXE` como prueba de humo del toolchain completo
 - [x] Recuperar `nt31.img` de un `INACCESSIBLE_BOOT_DEVICE` (clonado desde `nt31-debugger.img`, ante el límite estructural del ERD con el mismo bug de CD-ROM SCSI del proyecto)
 - [x] Cargar el driver como servicio (`REGINI.EXE`, arranque manual) y verificar en vivo con `I386KD.EXE` — breakpoint en `NT!_IopLoadDriver`, delimitación de función sin símbolos propios (`ln` sobre nombre), hallazgo de `MmLoadSystemImage` como responsable real de abrir el archivo, y lectura del `UNICODE_STRING` con el path completo del driver en memoria del kernel
-- [ ] Repetir la verificación en vivo con un driver que sí tenga hardware compatible con QEMU (para ver una carga exitosa completa, no solo hasta el fallo de "device not found")
-- [ ] Verificar en vivo otras estructuras del Object Manager / I/O Manager descritas en *Inside Windows NT* (pendiente del README original)
+
 
 ## Créditos y fuentes
 
