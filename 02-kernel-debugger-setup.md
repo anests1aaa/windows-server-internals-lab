@@ -143,8 +143,6 @@ KD: baud rate reset to 19200
 KD: Kernel Debugger connection established.
 ```
 
-> ⚠️ **Corrección (ver Fase 3):** en su momento se asumió que el mensaje "Unable to load debug information" se resolvía solo tras la primera interrupción — pero esa conclusión nunca se puso a prueba realmente, porque los comandos usados para "confirmar" en el Paso 9 (`r`, `k`) no dependen de símbolos para funcionar. En la Fase 3 se descubrió la causa real: `I386KD` espera los `.DBG` organizados en subcarpetas por tipo de archivo (`C:\SYMBOLS\EXE\`, `C:\SYMBOLS\DLL\`), no sueltos en la raíz de `C:\SYMBOLS` como se dejaron acá. Ver [03-visual-c-ddk-setup.md](./03-visual-c-ddk-setup.md) para el diagnóstico completo y la corrección — recomendado aplicar esa estructura de subcarpetas ya en este paso para evitar el problema desde el principio.
-
 ## Paso 9: Forzar un break e interactuar con el kernel en vivo
 
 La conexión queda establecida, pero el sistema objetivo sigue ejecutando normalmente hasta que se fuerza una interrupción:
@@ -189,4 +187,4 @@ ChildEBP RetAddr
 ✅ Símbolos de kernel (`NTOSKRNL.DBG`) y HAL (`HAL.DBG`) cargados
 ✅ Break manual funcional, registros y stack trace verificados
 
-**Listo para empezar la lectura de *Inside Windows NT* con verificación en vivo de cada concepto contra el kernel real.**
+
