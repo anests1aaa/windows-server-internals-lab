@@ -109,19 +109,29 @@ cp nt31.img nt31-debugger.img
 
 ## Paso 7: Levantar ambas VMs conectadas por serial virtual
 
-**VM objetivo** (la que se va a depurar — servidor del socket):
+Además del serial de debug, cada VM levanta su propio **QEMU monitor** en un socket unix (`-monitor unix:...,server,nowait`). El monitor es un canal de control aparte del debug kernel: habla el protocolo HMP de QEMU (no el protocolo de `i386kd`), corre en el *host* que emula la VM, y permite mandarle comandos al hypervisor — `screendump` para capturar el framebuffer sin depender de que la ventana gráfica esté visible, `sendkey` para inyectar teclas, `system_powerdown`/`quit`, `info status`, etc. Con esto el asistente puede "ver" y controlar la VM por socket en vez de depender de la ventana de QEMU del host. Ver `tools/qemu-monitor.py` para el cliente usado (no hay `socat`/`nc` instalados, así que es un cliente mínimo en Python contra `socket` de la stdlib).
+
+**VM objetivo** (la que se va a depurar — servidor del socket serial):
 ```bash
 qemu-system-i386 -m 64 -hda nt31.img -M pc,acpi=off -cpu 486 \
-  -serial tcp::4555,server,nowait &
+  -serial tcp::4555,server,nowait \
+  -monitor unix:/home/s1a/WindowsNT3.1/qemu-target.monitor,server,nowait &
 ```
 → En el menú de boot, elegir la entrada con `[DEBUG]`.
 
-**VM debugger** (aloja `I386KD.EXE` — cliente del socket):
+**VM debugger** (aloja `I386KD.EXE` — cliente del socket serial):
 ```bash
 qemu-system-i386 -m 64 -hda nt31-debugger.img -M pc,acpi=off -cpu 486 \
-  -serial tcp:127.0.0.1:4555 &
+  -serial tcp:127.0.0.1:4555 \
+  -monitor unix:/home/s1a/WindowsNT3.1/qemu-debugger.monitor,server,nowait &
 ```
 → En el menú de boot, elegir la entrada **normal** (sin `[DEBUG]` — esta VM no está siendo depurada).
+
+Ejemplo de uso del monitor una vez arriba (capturar pantalla sin la ventana gráfica):
+```bash
+python3 tools/qemu-monitor.py /home/s1a/WindowsNT3.1/qemu-target.monitor screendump /tmp/target.ppm
+magick /tmp/target.ppm /tmp/target.png   # el monitor solo escribe PPM; se convierte para poder verla
+```
 
 ## Paso 8: Lanzar el debugger
 
