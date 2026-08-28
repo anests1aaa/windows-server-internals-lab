@@ -1,18 +1,5 @@
 #!/usr/bin/env python3
-"""
-Cliente minimo para el QEMU Monitor Protocol (HMP) sobre un socket unix.
 
-No usamos socat/nc porque no estan instalados en el host y no vale la pena
-agregar una dependencia del sistema solo para esto - el modulo socket de
-la stdlib alcanza.
-
-Uso:
-    qemu-monitor.py <socket> <comando...>
-
-Ejemplos:
-    qemu-monitor.py /home/s1a/WindowsNT3.1/qemu-target.monitor info status
-    qemu-monitor.py /home/s1a/WindowsNT3.1/qemu-target.monitor screendump /tmp/foo.ppm
-"""
 import socket
 import sys
 import time
