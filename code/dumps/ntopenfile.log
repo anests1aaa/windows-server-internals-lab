@@ -1,0 +1,8 @@
+log file opened
+kd> db 801690d0 L(80169110 - 801690d0)
+801690d0  6a 00 6a 00 6a 00 6a 00-8b 44 24 28 6a 00 50 8b  j.j.j.j..D$(j.P.
+801690e0  44 24 2c 6a 01 50 6a 00-8b 44 24 34 6a 00 50 8b  D$,j.Pj..D$4j.P.
+801690f0  44 24 38 50 8b 44 24 38-50 8b 44 24 38 50 e8 3d  D$8P.D$8P.D$8P.=
+80169100  f6 ff ff c2 18 00 8d 49-00 8d a4 24 00 00 00 00  .......I...$....
+kd> .logclose
+closing open log file
