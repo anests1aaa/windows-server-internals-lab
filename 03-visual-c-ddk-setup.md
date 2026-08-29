@@ -188,6 +188,8 @@ set PATH=C:\DD\DD\BIN\I386\FREE;%PATH%
 
 Con esto, `BASEDIR=C:\DD\DD`, `NTMAKEENV=C:\DD\DD\INC`, `DDKBUILDENV=free` — confirmado con `echo` de cada variable.
 
+Prueba mínima de que `VCVARS32.BAT` deja `cl.exe` funcional antes de meterse con el DDK, un `int main(void)` de una línea (`code/hello.c`) compilado con `cl hello.c`.
+
 ## Primer build exitoso: `INPORT.SYS`
 
 Como candidato para la primera compilación de prueba se descartaron los samples de `krnldbg` (son herramientas del propio debugger — `kdapis` es la librería del protocolo de comunicación serial, `kdexts` son extensiones para `i386kd`/`windbg`, ninguno es un driver de carga real) y se comparó tamaño de fuente entre `comm\oldpar` (73KB, con message compiler aparte) y `input\inport` (94KB en dos `.C`, sin piezas de build adicionales). Se eligió **`INPORT`** — driver del mouse serie "InPort" (bus mouse propietario Microsoft/ATI de los 90).

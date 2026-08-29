@@ -1,3 +1,8 @@
+---
+layout: default
+title: Fase 4 — NtOpenFile / IoCreateFile
+---
+
 # NtOpenFile — análisis de wrapper sobre IoCreateFile
 
 ## Origen de los bytes
@@ -44,6 +49,13 @@ Guardado en `code/dumps/ntopenfile.bin` (bytes crudos) y `code/dumps/ntopenfile.
 | 80169109   | `8d a4 24 00 00 00 00` | `lea esp,[esp+0x0]` (padding) |
 
 **No hay prólogo** (`push ebp`/`mov ebp,esp` o `sub esp,N`): la función arranca directo con `push` y direcciona todo vía `[esp+N]`, sin frame pointer (build optimizado, FPO). Esto confirma que `801690d0` es el **primer byte** de `NtOpenFile` — en ese punto `esp` apunta a la dirección de retorno del caller.
+
+Confirmado en vivo con `u` (desensamblado del propio debugger, coincide instrucción a instrucción con la tabla de arriba) y con un breakpoint en `NtOpenFile` que cae justo en el `call`:
+
+![Desensamblado de NtOpenFile mostrando el call a NT!_IoCreateFile](img/kd-u-ntopenfile-calls-iocreatefile.png)
+![Breakpoint en NtOpenFile deteniéndose en el call a IoCreateFile](img/kd-bp-ntopenfile-at-iocreatefile-call.png)
+
+En ambas capturas, `i386kd` resuelve `80168740` directo como `NT!_IoCreateFile` — confirma sin ambigüedad que la función **sí tiene símbolo público** (no hubo que inferir el nombre por firma/comportamiento).
 
 ## Reconstrucción del stack (orden de push, ESP relativo a la entrada de la función = `ESP0`)
 
@@ -108,6 +120,11 @@ NTSTATUS IoCreateFile(
 
 ## Siguientes pasos
 
-- [ ] Volcar `db 80168740 L100` (o el tamaño que corresponda) y repetir este mismo proceso sobre `IoCreateFile`.
-- [ ] Confirmar si `IoCreateFile` es exportada/tiene símbolo público, o si hay que inferir el nombre por firma/comportamiento.
+- [x] Confirmar si `IoCreateFile` es exportada/tiene símbolo público — sí, `i386kd` resuelve `80168740` directo como `NT!_IoCreateFile` (ver capturas arriba).
+- [x] Volcar `db 80168740 L(80168c70-80168740)` y repetir este mismo proceso sobre `IoCreateFile` — hecho, ver `code/dumps/iocreatefile.bin` / `code/dumps/iocreatefile.log`.
+- [ ] Importar `iocreatefile.bin` en Ghidra en la dirección base real (`0x80168740`) y decompilar con `scripts/DecompileDump.java` (script headless de `DecompInterface`, ver metodología de análisis en el proyecto).
 - [ ] Correlacionar direcciones (`801690d0`, `80168740`) contra la base de carga de `ntoskrnl.exe` para mapearlas a offsets de archivo si se quiere anotar en Ghidra sobre el binario en disco.
+
+## IoCreateFile — análisis en curso
+
+Pendiente de documentar acá. El dump crudo y el script de decompile ya están en el repo (`code/dumps/iocreatefile.{bin,log}`, `scripts/DecompileDump.java`); falta el análisis del cuerpo de la función.

@@ -177,8 +177,14 @@ Esto detiene la ejecución del kernel remoto en el punto exacto donde estaba, y 
 | `?` | Lista completa de comandos disponibles |
 | `r` | Estado de los registros de la CPU en el instante del break |
 | `k` | Stack trace (pila de llamadas) actual |
+| `x <módulo>!<patrón>` | Busca símbolos que matchean un patrón (con wildcard `*`) dentro de un módulo — sí depende de símbolos cargados |
 
 > Nota: ni `r` ni `k` requieren símbolos cargados para funcionar (son datos crudos: registros y direcciones en hex). Que ambos funcionen bien **no** es prueba de que los símbolos hayan cargado correctamente — para eso hace falta un comando que sí dependa de ellos, como `ln <dirección>` (ver Fase 3).
+
+Ejemplo de `x` recorriendo el namespace del Object Manager (`nt!_Ob*`) y las syscalls `Nt*` de creación de proceso/hilo/sección — útil para ubicar puntos de entrada antes de reversear una función puntual:
+
+![x nt!_Ob* listando símbolos del Object Manager](img/kd-x-nt-ob-symbols.png)
+![x nt!_Nt* listando NtOpenFile, NtCreateSection, NtCreateProcess, NtCreateThread](img/kd-x-nt-createprocess-chain-symbols.png)
 
 Ejemplo de sesión real:
 ```
