@@ -111,21 +111,23 @@ cp nt31.img nt31-debugger.img
 
 Además del serial de debug, cada VM levanta su propio **QEMU monitor** en un socket unix (`-monitor unix:...,server,nowait`). El monitor es un canal de control aparte del debug kernel: habla el protocolo HMP de QEMU (no el protocolo de `i386kd`), corre en el *host* que emula la VM, y permite mandarle comandos al hypervisor — `screendump` para capturar el framebuffer sin depender de que la ventana gráfica esté visible, `sendkey` para inyectar teclas, `system_powerdown`/`quit`, `info status`, etc. Con esto el asistente puede "ver" y controlar la VM por socket en vez de depender de la ventana de QEMU del host. Ver `tools/qemu-monitor.py` para el cliente usado (no hay `socat`/`nc` instalados, así que es un cliente mínimo en Python contra `socket` de la stdlib).
 
-**VM objetivo** (la que se va a depurar — servidor del socket serial):
+**VM debugger** (aloja `I386KD.EXE` — **servidor** del socket serial):
+```bash
+qemu-system-i386 -m 64 -hda nt31-debugger.img -M pc,acpi=off -cpu 486 \
+  -serial tcp::4555,server,nowait \
+  -monitor unix:/home/s1a/WindowsNT3.1/qemu-debugger.monitor,server,nowait &
+```
+→ En el menú de boot, elegir la entrada **normal** (sin `[DEBUG]` — esta VM no está siendo depurada).
+
+**VM objetivo** (la que se va a depurar — **cliente** del socket serial):
 ```bash
 qemu-system-i386 -m 64 -hda nt31.img -M pc,acpi=off -cpu 486 \
-  -serial tcp::4555,server,nowait \
+  -serial tcp:127.0.0.1:4555 \
   -monitor unix:/home/s1a/WindowsNT3.1/qemu-target.monitor,server,nowait &
 ```
 → En el menú de boot, elegir la entrada con `[DEBUG]`.
 
-**VM debugger** (aloja `I386KD.EXE` — cliente del socket serial):
-```bash
-qemu-system-i386 -m 64 -hda nt31-debugger.img -M pc,acpi=off -cpu 486 \
-  -serial tcp:127.0.0.1:4555 \
-  -monitor unix:/home/s1a/WindowsNT3.1/qemu-debugger.monitor,server,nowait &
-```
-→ En el menú de boot, elegir la entrada **normal** (sin `[DEBUG]` — esta VM no está siendo depurada).
+**Por qué la VM debugger es el servidor y no la objetivo (cambiado 2026-08-28):** originalmente era al revés (objetivo=servidor, debugger=cliente), siguiendo el orden "natural" de quién depura a quién. Pero en la práctica la VM debugger es la que se deja corriendo largo rato (con `i386kd` ya escuchando), mientras que la VM objetivo es la que se reinicia todo el tiempo durante el trabajo de reversing. Con objetivo=servidor, cada reinicio de la objetivo mataba el socket y dejaba a la debugger con un cliente TCP colgado — greglar esto con `reconnect-ms=<n>` (el reemplazo del deprecado `reconnect=<segundos>`) resultó en un crash reproducible de QEMU 11.1.0 (`SIGABRT`/core dump) cuando el cliente arranca con `reconnect-ms` y todavía no hay nada escuchando del otro lado. Invirtiendo los roles el problema desaparece por completo: la debugger (servidor) puede arrancar sola en cualquier momento sin depender de que la objetivo ya esté arriba, y cada reinicio de la objetivo (cliente) simplemente hace un connect() nuevo contra un socket que ya está escuchando — sin reconnect, sin crash, sin tener que tocar la debugger.
 
 Ejemplo de uso del monitor una vez arriba (capturar pantalla sin la ventana gráfica):
 ```bash
@@ -193,6 +195,7 @@ ChildEBP RetAddr
 ## Notas y problemas menores encontrados
 
 - **Baud rate:** hay reportes conocidos de que algunos emuladores modernos envían datos más rápido de lo esperado a 19200 baudios, causando que el debugger parezca colgado en "waiting to connect". Si pasa, esperar unos segundos antes de asumir fallo.
+- **"waiting to connect..." que nunca progresa (2026-08-28):** distinto del problema de baud rate de arriba — acá el socket TCP está perfectamente conectado (se puede confirmar con `ss -tin`, hay tráfico real en ambas direcciones), pero `i386kd` se queda colgado igual, a veces por minutos. Causa real: el stub de kernel debugger de NT es *pasivo* — no manda un paquete "acá estoy" espontáneamente. Solo completa el handshake del protocolo KD cuando pasa uno de dos eventos: (a) el kernel pega una excepción/breakpoint real, o (b) el debugger manda un pedido explícito de break-in, que es lo que hace `Ctrl+C` en la ventana de `i386kd`. Si la VM objetivo está tranquila (ej. parada en la pantalla de login, sin disparar nada), no hay ningún evento (a) esperando pasar, así que sin mandar `Ctrl+C` una vez el handshake nunca se completa por más que se espere. Confirmación de que esto es lo que pasa: al mandar `Ctrl+C`, el break resultante cae en `NT!_KeUpdateSystemTime+0x109` — la ISR del timer, el primer punto "seguro" donde el kernel revisa si hay un break-in pendiente. **Solución:** después de loguear en la VM debugger y lanzar `i386kd`, si se queda en "waiting to connect..." más de unos segundos, mandar `Ctrl+C` una vez para forzar la sincronización inicial (no hace falta que la VM objetivo esté haciendo nada en particular).
 - **VM debugger con warning al arrancar:** al clonar el disco, la copia puede mostrar *"At least one service or driver failed during system startup"* — es esperable por diferencias mínimas de detección de hardware entre el disco original y la copia; no afecta el uso de `I386KD.EXE`, se puede descartar con OK.
 
 ## Estado del lab a partir de acá
