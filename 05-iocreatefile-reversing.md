@@ -177,15 +177,13 @@ else {
     local_2c = &stack0xfffffffc;
     local_14 = &stack0xffffff78;
 
-    /* NT!_ProbeAndWriteHandle — pre-zerear *FileHandle y validar el puntero */
-    func_0x8010b760(FileHandle, 0);
+    ProbeAndWriteHandle(FileHandle, 0);   /* pre-zerea *FileHandle y valida el puntero */
 
-    /* NT!_ProbeForWrite — validar que IoStatusBlock sea escribible (8 bytes, alineado a 4) */
-    func_0x80113306(IoStatusBlock, 8, 4);
+    ProbeForWrite(IoStatusBlock, 8, 4);   /* valida que IoStatusBlock sea escribible (8 bytes, alineado a 4) */
 
     /* Si no pasaron AllocationSize → crear uno en cero */
     if (AllocationSize == (PLARGE_INTEGER)0x0) {
-        local_24 = (_struct_3)func_0x80160084(0);  /* RtlConvertLongToLargeInteger(0) */
+        local_24 = (_struct_3)RtlConvertLongToLargeInteger(0);
     }
 ```
 
