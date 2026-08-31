@@ -405,6 +405,32 @@ Misma estructura (`ExtraCreateParameters == NULL` → inválido primero), pero s
 
 ---
 
+## 10. Bloque `EaBuffer` — try#1 (última parte de la rama UserMode)
+
+Última pieza de la rama `else` (`UserMode`) que arrancó en la Sección 5 — el segundo bloque `__try` independiente de la ScopeTable (Sección 4, `TryLevel = 1`), justo antes de armar los parámetros para el motor real de creación:
+
+![Ghidra mostrando el bloque de EaBuffer y try#1](img/iocreatefile-ghidra-eabuffer-try1-block.png)
+
+**Qué es `EaBuffer`:** parámetro 10, `PVOID` opcional a una cadena de **Extended Attributes** (EAs) — un resabio directo del **HPFS de OS/2**, heredado por compatibilidad con el subsistema OS/2 de NT. Cada EA es una `FILE_FULL_EA_INFORMATION` (confirmado en `NTDDK.H`: `NextEntryOffset`, `Flags`, `EaNameLength`, `EaValueLength`, `EaName[]` seguido del valor crudo), encadenadas entre sí. `EaLength` (parámetro 11) es el tamaño total en bytes de la cadena.
+
+**El gate:** `if (EaBuffer == NULL || EaLength == 0)` → caso vacío, `local_54 = NULL` y `local_50 = 0` (el par "buffer de EA ya copiado al kernel + su tamaño" que la función arma acá, sea vacío o real, y que viaja hacia el motor de creación en vez del `EaBuffer` original de usermode). Nota: la etiqueta `LAB_80168a60` cae justo dentro de este caso vacío — hay otro punto de la función, no visto en esta captura, que salta directo acá sin pasar por el chequeo.
+
+**Rama `else` (EA real, no reverseada por ahora):** cuando sí hay EAs, el bloque llama `ProbeForRead(EaBuffer, EaLength, 4)` (misma dirección `0x801136c6` que ya identificamos), reserva un buffer del kernel, copia el contenido a mano (DWORD a DWORD y después byte a byte), y valida el formato de la cadena con lo que parece ser `IoCheckEaBufferValidity` (firma `buffer, length, &ErrorOffset` — coincide con la función real documentada de NT). Queda pendiente de reversear en detalle — es la rama de compatibilidad con OS/2, no el camino común.
+
+**Confirmación en vivo con `i386kd`:** con un breakpoint en `IoCreateFile` (`bp 80168740`) disparado desde `hello.exe`, `dd esp L4` mostró la dirección de retorno como `80169103` — coincide *exacto* con el valor calculado a mano en la Fase 4 (`801690fe` + 5 bytes de `call` = `80169103`), confirmando en vivo que este `IoCreateFile` fue invocado desde `NtOpenFile`. Siguiendo la ejecución hasta la zona del `if` gigante y el gate de `CreateFileType`, el disassembly confirmó en vivo los offsets exactos de varios parámetros contra el frame (`ebp+0x8 + 4×(n-1)`), validando la aritmética que veníamos usando solo por cálculo:
+
+| Parámetro | Offset confirmado |
+|---|---|
+| `DesiredAccess` (2) | `[ebp+0xC]` |
+| `Disposition` (8) | `[ebp+0x24]` |
+| `CreateOptions` (9) | `[ebp+0x28]` |
+| `EaBuffer` (10) | `[ebp+0x2C]` |
+| `CreateFileType` (12) | `[ebp+0x34]` |
+
+En esta corrida en particular, `hello.exe` no usa Extended Attributes: `EaBuffer` llegó `NULL`, confirmando en vivo que se toma la rama vacía del gate.
+
+---
+
 ## Referencias
 
 - NT DDK octubre 1994 — `ddk_extract/INC/NTDDK.H`
