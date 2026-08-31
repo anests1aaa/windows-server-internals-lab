@@ -181,8 +181,10 @@ qemu-system-i386 -m 64 -hda nt31.img -boot c -M pc,acpi=off -cpu 486
   → Ver [02-kernel-debugger-setup.md](./02-kernel-debugger-setup.md) para el proceso completo.
 - [x] Instalar toolchain de compilación de drivers (Visual C++ 1.10 for NT + DDK), compilar un primer driver real y verificar su carga en vivo con `I386KD.EXE`
   → Ver [03-visual-c-ddk-setup.md](./03-visual-c-ddk-setup.md) para el proceso completo.
-- [ ] Reversear en vivo funciones del I/O Manager aislándolas una por una (técnica: `ln` + `db` + reconstrucción en Ghidra), empezando por `NtOpenFile` → `IoCreateFile`
-  → Ver [04-ntopenfile-reversing.md](./04-ntopenfile-reversing.md) para el proceso (en curso).
+- [x] Reversear en vivo funciones del I/O Manager aislándolas una por una (técnica: `ln` + `db` + reconstrucción en Ghidra), empezando por `NtOpenFile` → `IoCreateFile`
+  → Ver [04-ntopenfile-reversing.md](./04-ntopenfile-reversing.md) para el proceso.
+- [ ] Reversear `IoCreateFile` completo con Ghidra (tipos DDK auténticos, frame SEH, validaciones de usermode)
+  → Ver [05-iocreatefile-reversing.md](./05-iocreatefile-reversing.md) para el proceso (en curso).
 
 
 ## Créditos y fuentes

@@ -122,9 +122,9 @@ NTSTATUS IoCreateFile(
 
 - [x] Confirmar si `IoCreateFile` es exportada/tiene símbolo público — sí, `i386kd` resuelve `80168740` directo como `NT!_IoCreateFile` (ver capturas arriba).
 - [x] Volcar `db 80168740 L(80168c70-80168740)` y repetir este mismo proceso sobre `IoCreateFile` — hecho, ver `code/dumps/iocreatefile.bin` / `code/dumps/iocreatefile.log`.
-- [ ] Importar `iocreatefile.bin` en Ghidra en la dirección base real (`0x80168740`) y decompilar con `scripts/DecompileDump.java` (script headless de `DecompInterface`, ver metodología de análisis en el proyecto).
+- [x] Importar `iocreatefile.bin` en Ghidra en la dirección base real (`0x80168740`) y decompilar — ver [05-iocreatefile-reversing.md](./05-iocreatefile-reversing.md).
 - [ ] Correlacionar direcciones (`801690d0`, `80168740`) contra la base de carga de `ntoskrnl.exe` para mapearlas a offsets de archivo si se quiere anotar en Ghidra sobre el binario en disco.
 
-## IoCreateFile — análisis en curso
+## IoCreateFile — análisis completo
 
-Pendiente de documentar acá. El dump crudo y el script de decompile ya están en el repo (`code/dumps/iocreatefile.{bin,log}`, `scripts/DecompileDump.java`); falta el análisis del cuerpo de la función.
+El análisis del cuerpo de la función (tipos DDK auténticos, `RequestorMode`, frame SEH, validaciones de usermode) se movió a su propio documento: ver [05-iocreatefile-reversing.md](./05-iocreatefile-reversing.md).
