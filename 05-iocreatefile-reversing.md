@@ -185,9 +185,28 @@ else {
     if (AllocationSize == (PLARGE_INTEGER)0x0) {
         local_24 = (_struct_3)RtlConvertLongToLargeInteger(0);
     }
+    else {
+        ProbeForRead(AllocationSize, 8, 4);   /* valida que AllocationSize sea legible (8 bytes, alineado a 4) */
+        local_24 = AllocationSize->field0;    /* copia el valor a memoria del kernel */
+    }
 ```
 
 ![Ghidra mostrando el bloque UserMode con ProbeAndWriteHandle y ProbeForWrite](img/iocreatefile-ghidra-usermode-probe-block.png)
+
+Vista completa del bloque, con las cuatro funciones ya renombradas en el proyecto Ghidra y el panel de Listing correlacionando la línea 89 (`ProbeForWrite`) con su dirección real:
+
+![Ghidra mostrando el bloque completo del if/else de AllocationSize, con ProbeAndWriteHandle, ProbeForWrite, RtlConvertLongToLargeInteger y ProbeForRead ya renombradas](img/iocreatefile-ghidra-allocationsize-branch.png)
+![Ghidra mostrando el código con los cuatro nombres reales aplicados: ProbeAndWriteHandle, ProbeForWrite, RtlConvertLongToLargeInteger, ProbeForRead](img/iocreatefile-ghidra-allocationsize-else-branch.png)
+
+### ¿Qué hace `Probe` realmente?
+
+Es clave no confundir esto: **`Probe` no copia nada, solo valida** — es un gate de permisos que corre *antes* de tocar la memoria. Para cada rango `[Address, Address+Length)` verifica tres cosas:
+
+1. **Que la dirección caiga en espacio de usermode** (por debajo de `0x80000000` en este build) y no en espacio del kernel. Esto es lo central: el kernel corre con acceso total a *toda* la memoria, kernel y usuario. Sin este chequeo, un proceso podría pasar una dirección del kernel disfrazada de "mi handle de salida", y el kernel — que tiene permiso de sobra — terminaría escribiendo ahí a pedido de usermode. `Probe` es lo que bloquea ese primitivo de escalada de privilegios.
+2. **Alineación** — el `4` que se repite en cada llamada, acorde al tipo que se está validando.
+3. **Que la página esté presente y con el permiso correcto** (legible para `ProbeForRead`, escribible para `ProbeForWrite`) — si no lo está, ahí es donde salta `STATUS_ACCESS_VIOLATION`, capturado por el `__try/__except` de la Sección 4. El frame SEH existe *específicamente* para esto.
+
+La copia a una variable local (`local_24 = AllocationSize->field0`, o el `*FileHandle = 0` de más abajo) es un paso **separado**, que hace `IoCreateFile` recién después de que `Probe` dio el visto bueno — es la defensa contra TOCTOU (*time-of-check to time-of-use*): otro hilo del mismo proceso podría modificar o desmapear esa memoria microsegundos después de validada, así que el valor se copia a memoria del kernel (fuera del alcance de usermode) una sola vez y el resto de la función ya no vuelve a tocar el puntero original.
 
 ### ProbeAndWriteHandle (`0x8010b760`)
 
@@ -209,16 +228,33 @@ Verifica que `MmCheckPteOnProbe` esté activo, llama a `MmProbeForWrite(Address,
 
 ### ProbeForWrite (`0x80113306`)
 
-Llamada como `func_0x80113306(IoStatusBlock, 8, 4)`:
+Llamada como `ProbeForWrite(IoStatusBlock, 8, 4)`:
 - Puntero: `IoStatusBlock`
 - Longitud: `8` bytes (tamaño de `IO_STATUS_BLOCK`)
 - Alineación: `4` bytes
 
 Valida que `IoStatusBlock` está completamente en espacio de usuario y es escribible.
 
+**Por qué acá es solo `ProbeForWrite` y no `ProbeAndWrite` como con `FileHandle`:** `IoStatusBlock` es el resultado *final* de la operación (`Status`/`Information`) — algo que en este punto de la función todavía no existe. El valor real recién se conoce mucho más adelante, adentro de `IopCreateFile`, después de que el filesystem driver completa el IRP (potencialmente de forma asíncrona). El trabajo se divide en dos: **validar ya** (fail-fast — mejor descubrir un puntero inválido acá, con un error simple, que mil líneas después en medio de una IRP ya en curso) y **escribir después**, cuando el resultado real esté disponible.
+
 ### RtlConvertLongToLargeInteger (`0x80160084`)
 
 Cuando `AllocationSize == NULL`, la función crea un `LARGE_INTEGER` de valor cero para usar como tamaño por defecto. `RtlConvertLongToLargeInteger(0)` extiende el entero `0` a 64 bits.
+
+Confirmado en vivo con un breakpoint en `IoCreateFile+0x84`: el `jz` salta directo al `push 0x0` + `call NT!_RtlConvertLongToLargeInteger`, saltándose por completo la rama de `ProbeForRead` — la prueba de que cuando `AllocationSize` es `NULL` nunca se toca memoria de usermode para este parámetro:
+
+![i386kd con breakpoint en IoCreateFile+0x84 mostrando el salto directo a RtlConvertLongToLargeInteger cuando AllocationSize es NULL](img/iocreatefile-kd-allocationsize-null-confirmed.png)
+
+### ProbeForRead (`0x801136c6`)
+
+Rama `else` — cuando el caller sí mandó un `AllocationSize` real (`!= NULL`):
+
+```c
+ProbeForRead(AllocationSize, 8, 4);
+local_24 = AllocationSize->field0;
+```
+
+Mismo patrón que `ProbeForWrite`, pero para **lectura**: valida que los 8 bytes de `AllocationSize` son legibles desde usermode antes de desreferenciarlos. Recién con el puntero validado, `local_24 = AllocationSize->field0` copia el valor a la variable local del kernel — la misma defensa TOCTOU explicada arriba: se lee una sola vez, apenas validado, y el resto de la función ya no vuelve a tocar `AllocationSize` directamente.
 
 ---
 
@@ -240,6 +276,7 @@ IoCreateFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock,
       ├─ ProbeAndWriteHandle(FileHandle, 0)     → pre-zerear + validar
       ├─ ProbeForWrite(IoStatusBlock, 8, 4)     → validar IoStatusBlock
       ├─ Si AllocationSize == NULL → RtlConvertLongToLargeInteger(0)
+      │  Si no  → ProbeForRead(AllocationSize, 8, 4) + copiar a local_24
       ├─ Si EaBuffer != NULL:
       │   └─ Abrir try#1 (TryLevel = 1)
       │       ProbeForRead(EaBuffer, EaLength) + copiar al kernel heap
