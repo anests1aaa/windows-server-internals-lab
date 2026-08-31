@@ -427,7 +427,18 @@ Misma estructura (`ExtraCreateParameters == NULL` → inválido primero), pero s
 | `EaBuffer` (10) | `[ebp+0x2C]` |
 | `CreateFileType` (12) | `[ebp+0x34]` |
 
-En esta corrida en particular, `hello.exe` no usa Extended Attributes: `EaBuffer` llegó `NULL`, confirmando en vivo que se toma la rama vacía del gate.
+En esta corrida en particular, `hello.exe` no usa Extended Attributes: `EaBuffer` llegó `NULL`, confirmando en vivo que se toma la rama vacía del gate — nunca se ejecuta el `else`:
+
+```
+80168953  0bf6          or  esi,esi
+80168955  0f8405010000  je  NT!_IoCreateFile+0x320 (80168a60)
+80168a60  c745b0000000    mov dword ptr [ebp-0x50],0x0
+80168a67  c745b400000000  mov dword ptr [ebp-0x4c],0x0
+```
+
+Con `esi` (`EaBuffer`) en `NULL`, el `je` salta directo a `80168a60` — exactamente la dirección de `LAB_80168a60` ya identificada en Ghidra. El `else` completo (`ProbeForRead`, la reserva y copia manual, la validación tipo `IoCheckEaBufferValidity`) queda salteado por completo; las dos instrucciones en el destino son el zero-init real detrás de `local_54 = NULL` / la longitud en `0`.
+
+![i386kd confirmando que con EaBuffer NULL se saltea el else y se salta directo a LAB_80168a60](img/iocreatefile-kd-eabuffer-null-skips-else.png)
 
 ---
 
