@@ -166,35 +166,9 @@ kd> dd 8019db00 L6
 
 ## 5. Flujo del else — rama UserMode
 
-Cuando `RequestorMode == UserMode` (≠ `'\0'`), la función debe validar que todos los punteros que recibió de usermode son realmente escribibles antes de usarlos.
-
-```c
-else {
-    local_54 = (undefined4 *)0x0;
-
-    /* Abrimos el Try — TryLevel = 0 */
-    local_3c[3] = 0;
-    local_2c = &stack0xfffffffc;
-    local_14 = &stack0xffffff78;
-
-    ProbeAndWriteHandle(FileHandle, 0);   /* pre-zerea *FileHandle y valida el puntero */
-
-    ProbeForWrite(IoStatusBlock, 8, 4);   /* valida que IoStatusBlock sea escribible (8 bytes, alineado a 4) */
-
-    /* Si no pasaron AllocationSize → crear uno en cero */
-    if (AllocationSize == (PLARGE_INTEGER)0x0) {
-        local_24 = (_struct_3)RtlConvertLongToLargeInteger(0);
-    }
-    else {
-        ProbeForRead(AllocationSize, 8, 4);   /* valida que AllocationSize sea legible (8 bytes, alineado a 4) */
-        local_24 = AllocationSize->field0;    /* copia el valor a memoria del kernel */
-    }
-```
+Cuando `RequestorMode == UserMode` (≠ `'\0'`), la función debe validar que todos los punteros que recibió de usermode son realmente escribibles antes de usarlos. Progresión completa del bloque en Ghidra — desde el primer pase (`func_0x...` sin renombrar) hasta las cuatro funciones ya identificadas (`ProbeAndWriteHandle`, `ProbeForWrite`, `RtlConvertLongToLargeInteger`, `ProbeForRead`) y el panel de Listing correlacionando la dirección real:
 
 ![Ghidra mostrando el bloque UserMode con ProbeAndWriteHandle y ProbeForWrite](img/iocreatefile-ghidra-usermode-probe-block.png)
-
-Vista completa del bloque, con las cuatro funciones ya renombradas en el proyecto Ghidra y el panel de Listing correlacionando la línea 89 (`ProbeForWrite`) con su dirección real:
-
 ![Ghidra mostrando el bloque completo del if/else de AllocationSize, con ProbeAndWriteHandle, ProbeForWrite, RtlConvertLongToLargeInteger y ProbeForRead ya renombradas](img/iocreatefile-ghidra-allocationsize-branch.png)
 ![Ghidra mostrando el código con los cuatro nombres reales aplicados: ProbeAndWriteHandle, ProbeForWrite, RtlConvertLongToLargeInteger, ProbeForRead](img/iocreatefile-ghidra-allocationsize-else-branch.png)
 
@@ -247,14 +221,7 @@ Confirmado en vivo con un breakpoint en `IoCreateFile+0x84`: el `jz` salta direc
 
 ### ProbeForRead (`0x801136c6`)
 
-Rama `else` — cuando el caller sí mandó un `AllocationSize` real (`!= NULL`):
-
-```c
-ProbeForRead(AllocationSize, 8, 4);
-local_24 = AllocationSize->field0;
-```
-
-Mismo patrón que `ProbeForWrite`, pero para **lectura**: valida que los 8 bytes de `AllocationSize` son legibles desde usermode antes de desreferenciarlos. Recién con el puntero validado, `local_24 = AllocationSize->field0` copia el valor a la variable local del kernel — la misma defensa TOCTOU explicada arriba: se lee una sola vez, apenas validado, y el resto de la función ya no vuelve a tocar `AllocationSize` directamente.
+Rama `else` — cuando el caller sí mandó un `AllocationSize` real (`!= NULL`), visible en la captura de arriba: `ProbeForRead(AllocationSize, 8, 4)` seguido de `local_24 = AllocationSize->field0`. Mismo patrón que `ProbeForWrite`, pero para **lectura**: valida que los 8 bytes de `AllocationSize` son legibles desde usermode antes de desreferenciarlos. Recién con el puntero validado, `local_24 = AllocationSize->field0` copia el valor a la variable local del kernel — la misma defensa TOCTOU explicada arriba: se lee una sola vez, apenas validado, y el resto de la función ya no vuelve a tocar `AllocationSize` directamente.
 
 ---
 
@@ -279,6 +246,7 @@ IoCreateFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock,
       │  Si no  → ProbeForRead(AllocationSize, 8, 4) + copiar a local_24
       ├─ Validación gigante de FileAttributes/ShareAccess/Disposition/CreateOptions/
       │  DesiredAccess → si algo no cierra, STATUS_INVALID_PARAMETER (Sección 8)
+      ├─ Si CreateFileType != None → validar NamedPipe/Mailslot (Sección 9)
       ├─ Si EaBuffer != NULL:
       │   └─ Abrir try#1 (TryLevel = 1)
       │       ProbeForRead(EaBuffer, EaLength) + copiar al kernel heap
@@ -307,22 +275,6 @@ El flag `0x100` es el único que afecta el flujo de `IoCreateFile` directamente:
 ## 8. Validación de parámetros — el `if` gigante
 
 Después de resolver `AllocationSize` (Sección 5), y antes de tocar `EaBuffer` o llamar a `IopCreateFile`, la función corre un único `if` con toda la validación cruzada de `FileAttributes`, `ShareAccess`, `Disposition`, `CreateOptions` y `DesiredAccess`. Si cualquier condición da cierto, corta con `STATUS_INVALID_PARAMETER`:
-
-```c
-if ((((((FileAttributes & 0xfffff848) != 0) || ((ShareAccess & 0xfffffff8) != 0)) ||
-    (5 < Disposition)) || ((CreateOptions & 0xffff8000) != 0)) ||
-   (((CreateOptions & 0x30) != 0 && ((DesiredAccess & 0x100000) == 0))) ||
-   (((CreateOptions & 0x1000) != 0 && ((DesiredAccess & 0x10000) == 0))) ||
-  (((CreateOptions & 0x10) != 0 && ((CreateOptions & 0x20) != 0)) ||
-   (((CreateOptions & 1) != 0 &&
-   (((CreateOptions & 0xffff9fcc) != 0 ||
-    (((Disposition != 2 && (Disposition != 1)) && (Disposition != 3)))) ||
-    ((DesiredAccess & 6) != 0)))))) ||
-   ((CreateOptions & 8) != 0 && ((DesiredAccess & 4) != 0)))) {
-  local_c = 0xc000000d;
-  goto LAB_80168c55;
-}
-```
 
 ![Ghidra mostrando el if gigante de validación de parámetros en IoCreateFile](img/iocreatefile-ghidra-parameter-validation-giant-if.png)
 
@@ -413,6 +365,43 @@ Cualquier otro bit de `CreateOptions` (buffering, oplocks, EAs — todo lo que a
 **`Disposition != 2 && Disposition != 1 && Disposition != 3`** — para un directorio solo se permiten `FILE_OPEN`, `FILE_CREATE`, `FILE_OPEN_IF`. Los tres rechazados (`FILE_SUPERSEDE`, `FILE_OVERWRITE`, `FILE_OVERWRITE_IF`) implican reemplazar/truncar contenido — algo que no existe para un directorio.
 
 **`(DesiredAccess & 6) != 0`** — `FILE_ADD_FILE`/`FILE_ADD_SUBDIRECTORY` (mismos bits que `FILE_WRITE_DATA`/`FILE_APPEND_DATA`, pero renombrados para un directorio según `winnt.h`). *(Hipótesis, no confirmada)*: probablemente estos derechos se evalúan contra el ACL del directorio cuando alguien más tarde crea algo adentro (abriendo el path hijo), no algo que tenga sentido pedir directamente al abrir el handle del directorio en sí.
+
+---
+
+## 9. Validación específica por `CreateFileType` (NamedPipe / Mailslot)
+
+Un segundo bloque de validación, estructuralmente separado del `if` gigante de la Sección 8, cubre los dos tipos especiales de `CreateFileType` (recordar el enum de la Sección 2 — `CreateFileTypeNone = 0`, `CreateFileTypeNamedPipe = 1`, `CreateFileTypeMailslot = 2`, confirmado en `NTDDK.H`):
+
+![Ghidra mostrando la validación de CreateFileType para NamedPipe y Mailslot](img/iocreatefile-ghidra-createfiletype-namedpipe-mailslot.png)
+
+El `if (CreateFileType != CreateFileTypeNone)` de afuera es un *guard clause*, no una regla de negocio — a diferencia de los bitmasks de la Sección 8, `CreateFileType` es un enum de un solo valor, así que "no es None" y "es NamedPipe" no son dos condiciones independientes: si es `NamedPipe`, automáticamente ya es distinto de `None`. El gate solo existe para saltear todo el bloque en el caso común (abrir un archivo normal).
+
+### Bloque `NamedPipe`
+
+Primero, `ExtraCreateParameters == NULL` → inválido (un pipe necesita esos parámetros extra para poder crearse). Después, un segundo `if` valida:
+
+- **Tres campos dentro de la estructura apuntada por `ExtraCreateParameters`** (offsets `0x0`, `0x4`, `0x8`), cada uno rechazado si vale más de `1`. No están en el DDK público de 1994 (es un detalle interno compartido entre el I/O Manager y `NPFS.SYS`), pero por documentación de NT bien conocida — *sin confirmar contra un header de esta build* — corresponden a:
+  ```c
+  typedef struct _NAMED_PIPE_CREATE_PARAMETERS {
+      ULONG NamedPipeType;    // offset 0x0 — 0 = byte stream, 1 = message
+      ULONG ReadMode;         // offset 0x4 — 0 = byte,       1 = message
+      ULONG CompletionMode;   // offset 0x8 — 0 = queue,      1 = complete
+      ...
+  } NAMED_PIPE_CREATE_PARAMETERS;
+  ```
+  Los tres son enums booleanos disfrazados de `ULONG` — mismo patrón "Tipo 1" de la Sección 8 (validez de un campo aislado), aplicado a campos de una estructura en vez de a un parámetro directo.
+- **`ShareAccess & 4`** — el mismo bit sin nombre público de la Sección 8 (precursor de `FILE_SHARE_DELETE`): un pipe no tiene semántica de "borrado" tipo archivo, se rechaza.
+- **`Disposition == 0`** (`FILE_SUPERSEDE`) combinado con `3 < Disposition` más abajo: el único rango que sobrevive es `1`-`3` (`FILE_OPEN`/`FILE_CREATE`/`FILE_OPEN_IF`) — mismo trío que quedó habilitado para directorios, porque un pipe tampoco tiene contenido para reemplazar.
+- **`CreateOptions & 0xffffffcd`** — complemento de `0x32`: solo `FILE_WRITE_THROUGH`, `FILE_SYNCHRONOUS_IO_ALERT`, `FILE_SYNCHRONOUS_IO_NONALERT` son válidos, un set todavía más chico que el de directorios.
+
+### Bloque `Mailslot`
+
+Misma estructura (`ExtraCreateParameters == NULL` → inválido primero), pero sin el chequeo de campos internos — la estructura de mailslot no tiene esos tres enums booleanos. El segundo `if` valida:
+
+- **`ShareAccess & 4`** — mismo motivo que `NamedPipe`.
+- **`ShareAccess & 0xfffffffd) == 0`** — la primera vez que aparece `== 0` en vez de `!= 0`: la máscara `0xfffffffd` (complemento de `0x2`, `FILE_SHARE_WRITE`) agarra *todos los demás bits* de `ShareAccess`. Que el resultado sea `0` significa que no hay ningún bit prendido salvo, como mucho, `0x2` — en la práctica, exige que `FILE_SHARE_READ` (`0x1`) esté presente. *(Hipótesis, no confirmada)*: probablemente porque los clientes que le escriben mensajes al mailslot necesitan su propio handle de lectura simultáneo.
+- **`Disposition != 2`** — a diferencia de `NamedPipe`, un mailslot **solo** admite `FILE_CREATE`. No existe "conectarse" a un mailslot existente por esta vía — eso se hace abriendo el path como archivo común (`CreateFileTypeNone`).
+- **`CreateOptions & 0xffffffcd`** — mismo set válido que `NamedPipe`.
 
 ---
 
