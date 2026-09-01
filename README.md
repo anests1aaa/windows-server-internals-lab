@@ -183,8 +183,9 @@ qemu-system-i386 -m 64 -hda nt31.img -boot c -M pc,acpi=off -cpu 486
   → Ver [03-visual-c-ddk-setup.md](./03-visual-c-ddk-setup.md) para el proceso completo.
 - [x] Reversear en vivo funciones del I/O Manager aislándolas una por una (técnica: `ln` + `db` + reconstrucción en Ghidra), empezando por `NtOpenFile` → `IoCreateFile`
   → Ver [04-ntopenfile-reversing.md](./04-ntopenfile-reversing.md) para el proceso.
-- [ ] Reversear `IoCreateFile` completo con Ghidra (tipos DDK auténticos, frame SEH, validaciones de usermode)
-  → Ver [05-iocreatefile-reversing.md](./05-iocreatefile-reversing.md) para el proceso (en curso).
+- [x] Reversear `IoCreateFile` completo con Ghidra (tipos DDK auténticos, frame SEH, validaciones de usermode, `OPEN_PACKET`, entrega a `ObOpenObjectByName`)
+  → Ver [05-iocreatefile-reversing.md](./05-iocreatefile-reversing.md) para el proceso completo.
+- [ ] Reversear `ObOpenObjectByName` — el siguiente nivel de la pila de llamadas desde `IoCreateFile`
 
 
 ## Créditos y fuentes

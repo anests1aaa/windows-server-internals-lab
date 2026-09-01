@@ -511,9 +511,131 @@ NTSTATUS ObOpenObjectByName(
 );
 ```
 
+Confirmado en vivo con `i386kd` — el debugger resuelve el símbolo directo, y el orden de `push` (inverso a la declaración en `stdcall`) confirma cada argumento contra offsets ya conocidos del propio frame de `IoCreateFile`:
+
+```
+80168b0f  mov eax,[ebp+0xc]    ; push eax   → DesiredAccess (mismo offset que el param. 2 de IoCreateFile)
+80168b15  mov al,[ebp-0x1]     ; push eax   → RequestorMode (AccessMode) — offset real confirmado
+80168b1b  mov eax,[ebp+0x10]   ; push eax   → ObjectAttributes (mismo offset que el param. 3 de IoCreateFile)
+80168b1f  call NT!_ObOpenObjectByName (80125f86)
+```
+
+![i386kd confirmando la llamada a NT!_ObOpenObjectByName con el orden de push de cada argumento](img/iocreatefile-kd-obopenobjectbyname-args.png)
+
 Es el punto donde `IoCreateFile` entrega el control al Object Manager genérico — `ObpLookupObjectName` (Sección 02) resuelve el path, y cuando llega al filesystem driver, el `ParseContext` (`OPEN_PACKET`) es lo que le dice qué hacer específicamente con el archivo.
 
 Al final del bloque, si se había reservado un buffer de EA en la Sección 10 (`local_54 != NULL`), se libera con `func_0x801167f6(local_54)` — pendiente de confirmar el nombre (candidato natural: `ExFreePool`) y de entender exactamente en qué punto se consumió ese buffer antes de liberarlo.
+
+---
+
+## 12. Epílogo — procesar el resultado y desarmar el frame SEH
+
+Última parte de la función: qué hace `IoCreateFile` con lo que devolvió `ObOpenObjectByName`, y cómo cierra el `__try/__except` de la Sección 4 antes de retornar.
+
+![Ghidra mostrando el epílogo de IoCreateFile: procesamiento del resultado y desarme del frame SEH](img/iocreatefile-ghidra-epilogue-return.png)
+
+```c
+if (local_54 != (undefined4 *)0x0) {
+    func_0x801167f6(local_54);
+}
+bVar3 = local_6c != -0x4155fdaf;
+if (-1 < (int)STATUS_ERR) {
+    if (!bVar3) {
+        *(uint *)(local_78 + 0x2c) = *(uint *)(local_78 + 0x2c) | 0x40000;
+        *FileHandle = local_18;
+        IoStatusBlock->Information = local_70;
+        IoStatusBlock->Status = local_74;
+        STATUS_ERR = local_74;
+        goto Exit_IoCreateFile;
+    }
+    if (-1 < (int)STATUS_ERR) {
+        func_0x80121d66(local_18);
+        STATUS_ERR = 0xc0000024;
+    }
+}
+if ((int)local_74 < 0) {
+    STATUS_ERR = local_74;
+    if ((local_74 & 0xc0000000) == 0x80000000) {
+        IoStatusBlock->Status = local_74;
+        IoStatusBlock->Information = local_70;
+    }
+}
+else if ((local_78 != 0) && (bVar3)) {
+    if (*(short *)(local_78 + 0x30) != 0) {
+        func_0x801167f6(*(undefined4 *)(local_78 + 0x34));
+    }
+    *(undefined4 *)(local_78 + 4) = 0;
+    func_0x80113106(local_78);
+}
+Exit_IoCreateFile:
+*unaff_FS_OFFSET = local_3c[0];
+```
+
+### `NT_SUCCESS`, confirmado
+
+`if (-1 < (int)STATUS_ERR)` es el inline de la macro real, confirmada en `NTDEF.H`:
+
+```c
+#define NT_SUCCESS(Status) ((NTSTATUS)(Status) >= 0)
+```
+
+Comparar `> -1` como entero con signo es lo mismo que `>= 0` — el compilador lo expresa así porque los `NTSTATUS` de error tienen el bit más alto prendido (severidad `Error`), lo que los hace *negativos* al leerlos como `int`. Es el mismo truco de un solo chequeo de signo que usa toda la API de NT para distinguir éxito de error sin comparar contra un valor puntual.
+
+### `local_6c` — el campo que cambia dentro de `ObOpenObjectByName`
+
+`local_6c` es un campo del `OPEN_PACKET` (Sección 11) que se inicializaba en `0` antes de la llamada — pero `ObOpenObjectByName` (o, más probablemente, la rutina de parseo del filesystem a la que el Object Manager le reenvía el `ParseContext`) le escribe un valor nuevo *adentro* de esa misma memoria antes de retornar. Confirma algo importante: el `OPEN_PACKET` no es un parámetro de solo entrada — también es un canal de **salida**, el filesystem se comunica de vuelta con `IoCreateFile` escribiendo directamente en la estructura que recibió por puntero, no solo a través del valor de retorno de la función.
+
+`bVar3 = local_6c != -0x4155fdaf` compara ese campo contra una constante fija (`-0x4155fdaf`, sin confirmar contra ningún header — no encontré esta constante documentada en el DDK de 1994). Con el valor esperado (`bVar3 == false`) se toma el camino normal de éxito; si no matchea, algo salió distinto de lo esperado aunque el `STATUS_ERR` general haya dado éxito.
+
+### Camino de éxito real
+
+Con `NT_SUCCESS(STATUS_ERR)` y `local_6c` en el valor esperado:
+- Prende un bit (`0x40000`) en un campo del propio `OPEN_PACKET` (`local_78+0x2c`).
+- **`*FileHandle = local_18`** — recién acá se escribe el handle real en la salida del caller. Cierra el círculo con la Sección 5: `ProbeAndWriteHandle` había pre-cereado `*FileHandle` a `0` al principio de la función, como valor defensivo por si algo fallaba antes de llegar hasta acá; este es el único punto donde se sobreescribe con el handle de verdad.
+- Copia `Information`/`Status` a `IoStatusBlock` y salta a `Exit_IoCreateFile`.
+
+### Camino de "éxito pero no es lo que esperaba"
+
+Si `STATUS_ERR` fue éxito pero `bVar3` es cierto (el `local_6c` no matcheó): cierra el handle recién abierto (`func_0x80121d66(local_18)` — candidato natural `ZwClose`/`ObCloseHandle`) y fuerza el error a una constante confirmada en `NTSTATUS.H`:
+
+```c
+#define STATUS_OBJECT_TYPE_MISMATCH      ((NTSTATUS)0xC0000024L)
+```
+
+Lectura razonable: el Object Manager encontró y abrió *algo* con ese nombre — pero no es del tipo que `IoCreateFile` esperaba (no es un archivo), así que se descarta el handle y se reporta `STATUS_OBJECT_TYPE_MISMATCH` en vez de dejar pasar un handle a un objeto que no corresponde.
+
+### Propagación de errores con severidad `Warning`
+
+```c
+if ((local_74 & 0xc0000000) == 0x80000000) {
+```
+
+`0xc0000000` son los dos bits de severidad de un `NTSTATUS` (bits 30-31); `0x80000000` es, confirmado en `NTDEF.H`:
+
+```c
+#define ERROR_SEVERITY_WARNING       0x80000000
+```
+
+Solo cuando `local_74` es específicamente un *warning* (no un error duro, no informacional) se propaga a `IoStatusBlock`. Distinción fina entre "falló" y "funcionó con reservas" — un warning todavía deja completar la operación, pero el caller necesita enterarse.
+
+### Desarme del frame SEH
+
+La última línea de toda la función:
+
+```c
+Exit_IoCreateFile:
+*unaff_FS_OFFSET = local_3c[0];
+```
+
+Cierra el círculo con la Sección 4: `local_3c[0]` es el campo `Next` del `EXCEPTION_REGISTRATION_RECORD` que se armó al entrar a la función (el puntero al frame SEH *anterior*, del caller). Restaurar `FS:[0]` a ese valor es el desarme manual del frame de excepción — sacar el propio registro de la cadena de `FS:[0]` antes de retornar, para que un `__except` de más arriba en la pila de llamadas no intente usar un frame que ya dejó de existir.
+
+---
+
+## Cierre de la Fase 5
+
+Con esto termina el reversing de `IoCreateFile` en este proyecto: `RequestorMode` (Sección 3), el frame SEH (Sección 4), las validaciones de usermode — `AllocationSize`, el `if` gigante, `CreateFileType`, `EaBuffer` (Secciones 5, 8, 9, 10) —, el armado del `OPEN_PACKET` y la entrega al Object Manager vía `ObOpenObjectByName` (Sección 11), y el procesamiento del resultado hasta el retorno (Sección 12).
+
+**Próximo nivel de la pila:** `ObOpenObjectByName` — la función a la que `IoCreateFile` le pasa la posta. Documentado en su propia fase cuando arranque ese análisis.
 
 ---
 
