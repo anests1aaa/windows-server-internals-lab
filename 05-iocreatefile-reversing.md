@@ -442,6 +442,81 @@ Con `esi` (`EaBuffer`) en `NULL`, el `je` salta directo a `80168a60` — exactam
 
 ---
 
+## 11. Armado del `OPEN_PACKET` y llamada a `ObOpenObjectByName`
+
+Con todas las validaciones pasadas, `IoCreateFile` arma la estructura que finalmente cruza la frontera hacia el Object Manager:
+
+![Ghidra mostrando el armado del OPEN_PACKET, los dos ExInterlockedAddUlong y la llamada a ObOpenObjectByName](img/iocreatefile-ghidra-create-parameters-block.png)
+
+### El `OPEN_PACKET`
+
+`local_7c` en adelante no son variables sueltas — es una sola estructura armada en el stack y pasada por referencia (`&local_7c`) al final. La evidencia: se escriben todas en secuencia justo antes de una única llamada que recibe esa dirección, y ninguna se vuelve a leer después dentro de la misma función — el "lector" real es la función a la que se le pasa el puntero, no `IoCreateFile`.
+
+`local_7c = 8` confirma qué estructura es exactamente — coincide con una constante real de `NTDDK.H`:
+
+```c
+#define IO_TYPE_OPEN_PACKET             0x00000008
+```
+
+Es un **`OPEN_PACKET`**: la estructura interna que el I/O Manager arma para pasarle al Object Manager genérico toda la información específica de creación de archivos. `local_7a = 0x40` acompaña a `Type` como el campo `Size` (mismo patrón de header `Type`+`Size` que usan otras estructuras visibles del Object Manager). Entre los campos que se ven armados: `local_5c = Disposition << 0x18 | CreateOptions` — empaqueta los dos en un solo `ULONG` (`Disposition` cabe en el byte alto porque nunca pasa de `5`, `CreateOptions` nunca pasa de 15 bits válidos según `FILE_VALID_OPTION_FLAGS` — Sección 8 — así que no hay superposición posible), además de `FileAttributes`, `ShareAccess`, `Options`, `CreateFileType` y `ExtraCreateParameters` copiados directo.
+
+**Por qué se arman acá y no se vuelven a usar:** el `OPEN_PACKET` es el `ParseContext` — un `PVOID` genérico que el Object Manager no interpreta, solo arrastra sin tocar hasta la rutina de parseo del tipo de objeto correspondiente (acá, la del filesystem). El campo `Type` es lo que le permite a esa rutina, del otro lado, confirmar en runtime que lo que recibió es realmente un `OPEN_PACKET` antes de confiar en el resto de sus campos — el tamaño/offsets de cada campo los conoce en tiempo de compilación (comparte la definición de la estructura con `IoCreateFile`, no depende de leerlo de la memoria).
+
+### Los dos `ExInterlockedAddUlong` — contabilidad, no sincronización nueva
+
+Justo antes de la llamada final, dos incrementos atómicos de contadores de estadísticas de I/O — confirmado con `i386kd` (símbolos reales vía `ln`):
+
+![i386kd confirmando los símbolos IoOtherOperationCount / IoStatisticsLock](img/iocreatefile-kd-exinterlockedaddulong-symbols.png)
+
+```c
+ULONG
+ExInterlockedAddUlong (
+    IN PULONG      Addend,
+    IN ULONG       Increment,
+    IN PKSPIN_LOCK Lock
+    );
+```
+
+Primitivo de sincronización de bajo nivel: suma `Increment` a `*Addend` de forma atómica, tomando el spinlock `Lock` — evita que dos CPUs pisen el mismo contador en un kernel SMP.
+
+- **Primera llamada** — `Addend`/`Lock` calculados desde `FS:[0x124]` (el `KTHREAD` actual, Sección 3) → `*(KTHREAD+0x150)` (casi con certeza `ApcState.Process`, puntero al `EPROCESS`) → `+0x100`/`+0xc0`. Sin header público que confirme los nombres exactos (`EPROCESS`/`KTHREAD` son opacos en este DDK), pero es un contador **por proceso**.
+- **Segunda llamada** — direcciones fijas, confirmadas con `ln`:
+  ```
+  kd> ln 80198270
+  (80198270)   NT!_IoOtherOperationCount
+  kd> ln 801a5140
+  (801a5140)   NT!_IoStatisticsLock
+  ```
+  `IoOtherOperationCount` es un contador **global** real del I/O Manager — la familia `IoReadOperationCount`/`IoWriteOperationCount`/`IoOtherOperationCount` cuenta operaciones de I/O por tipo; crear/abrir un archivo cae en "otra". Mismo offset relativo (`+0x100`/`+0xc0`) que la llamada por-proceso — mismo layout de contadores, una copia global y una por proceso.
+
+Ninguna de las dos llamadas crea un mecanismo de sincronización nuevo — el spinlock ya existe de antes; esto solo lo usa para anotar, de forma segura, que acá pasó una operación de I/O de tipo "otra".
+
+### La llamada a `ObOpenObjectByName`
+
+```c
+STATUS_ERR = func_0x80125f86(ObjectAttributes, 0, RequestorMode, 0, DesiredAccess, &local_7c, &local_18);
+```
+
+7 argumentos, match exacto con la firma real (no pública, pero bien documentada en la literatura de NT internals) de `ObOpenObjectByName`:
+
+```c
+NTSTATUS ObOpenObjectByName(
+    POBJECT_ATTRIBUTES ObjectAttributes,
+    POBJECT_TYPE       ObjectType,       // 0 — se resuelve por nombre, no se fuerza
+    KPROCESSOR_MODE     AccessMode,      // RequestorMode
+    PACCESS_STATE       AccessState,     // 0 — sin AccessState pre-armado
+    ACCESS_MASK         DesiredAccess,
+    PVOID                ParseContext,   // &local_7c — el OPEN_PACKET
+    PHANDLE              Handle          // &local_18 — handle de salida
+);
+```
+
+Es el punto donde `IoCreateFile` entrega el control al Object Manager genérico — `ObpLookupObjectName` (Sección 02) resuelve el path, y cuando llega al filesystem driver, el `ParseContext` (`OPEN_PACKET`) es lo que le dice qué hacer específicamente con el archivo.
+
+Al final del bloque, si se había reservado un buffer de EA en la Sección 10 (`local_54 != NULL`), se libera con `func_0x801167f6(local_54)` — pendiente de confirmar el nombre (candidato natural: `ExFreePool`) y de entender exactamente en qué punto se consumió ese buffer antes de liberarlo.
+
+---
+
 ## Referencias
 
 - NT DDK octubre 1994 — `ddk_extract/INC/NTDDK.H`
