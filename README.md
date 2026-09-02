@@ -17,21 +17,6 @@ Documentación del proceso completo de instalación de **Windows NT 3.1 Advanced
 sudo pacman -S qemu-full mtools p7zip
 ```
 
-## Fuentes de software
-
-| Componente | Origen | Notas |
-|---|---|---|
-| Windows NT 3.1 Advanced Server (CD + boot disks) | WinWorld (winworldpc.com) | Abandonware, preservación de software descontinuado |
-| MS-DOS 6.22 Upgrade (3 disquetes) | WinWorld | Edición "Upgrade" — requiere truco de instalación en disco vacío |
-| OAKCDROM.SYS | Paquete "boot disk con soporte CD-ROM" (comunidad retro-computing) | Driver ATAPI genérico de Oak Technology, no incluido en ningún MS-DOS retail |
-| MSCDEX.EXE | Ya incluido en el Disk 1 de MS-DOS 6.22 | No hace falta bajarlo aparte |
-
-## ⚠️ Bug crítico descubierto: tipo de CPU
-
-**Este es el hallazgo más importante de todo el proceso.** NT 3.1 fue lanzado en 1993, cuando el Pentium todavía estaba en fase beta. El script de detección de CPU del instalador de NT 3.1 no maneja correctamente el `cpuid` de un Pentium emulado, lo que provoca un error `Error opening NTDETECT.COM, status = 000E` al intentar bootear desde el disco duro después de la instalación.
-
-**Solución: usar siempre `-cpu 486`, nunca `-cpu pentium`, en todos los comandos de QEMU para NT 3.1.**
-
 ## Paso a paso
 
 ### 1. Crear el disco duro virtual
@@ -164,31 +149,6 @@ Tras el reinicio automático (tras "The MS-DOS based portion of Setup is now com
 ```bash
 qemu-system-i386 -m 64 -hda nt31.img -boot c -M pc,acpi=off -cpu 486
 ```
-
-## Problemas encontrados y descartados (para referencia)
-
-| Intento | Resultado | Causa |
-|---|---|---|
-| `-device lsi53c895a` para el CD-ROM | No reconocido por el Setup | Chip posterior a 1993, no está en la lista de drivers de NT 3.1 |
-| `-device lsi53c810` | No reconocido | Mismo motivo — el chip real NCR 53C8xx que sí soporta NT (`NCRC700`/`NCRC710`) no es exactamente este modelo |
-| `-device buslogic` | Error "not a valid device model" | No compilado en el build de QEMU de Arch por defecto |
-| `-cpu pentium` | `Error opening NTDETECT.COM, status = 000E` al bootear desde disco duro | Bug de época: el instalador de NT 3.1 no maneja bien el cpuid de un Pentium |
-
-## Próximos pasos del proyecto
-
-- [x] Configurar `I386KD.EXE` (kernel debugger nativo de NT 3.x) con símbolos desde `SUPPORT\DEBUG\I386\SYMBOLS` del CD
-- [x] Armar sesión de debug remoto vía puerto serie virtual (dos VMs conectadas por socket TCP en QEMU)
-  → Ver [02-kernel-debugger-setup.md](./02-kernel-debugger-setup.md) para el proceso completo.
-- [x] Instalar toolchain de compilación de drivers (Visual C++ 1.10 for NT + DDK), compilar un primer driver real y verificar su carga en vivo con `I386KD.EXE`
-  → Ver [03-visual-c-ddk-setup.md](./03-visual-c-ddk-setup.md) para el proceso completo.
-- [x] Reversear en vivo funciones del I/O Manager aislándolas una por una (técnica: `ln` + `db` + reconstrucción en Ghidra), empezando por `NtOpenFile` → `IoCreateFile`
-  → Ver [04-ntopenfile-reversing.md](./04-ntopenfile-reversing.md) para el proceso.
-- [x] Reversear `IoCreateFile` completo con Ghidra (tipos DDK auténticos, frame SEH, validaciones de usermode, `OPEN_PACKET`, entrega a `ObOpenObjectByName`)
-  → Ver [05-iocreatefile-reversing.md](./05-iocreatefile-reversing.md) para el proceso completo.
-- [x] Reversear `ObOpenObjectByName` completo (validación de entrada, `SeCreateAccessState`, `ObpCaptureObjectAttributes`, `SeCaptureSecurityDescriptor`, entrega a `ObpLookupObjectName`, limpieza con `ExFreePool`)
-  → Ver [06-obopenobjectbyname-reversing.md](./06-obopenobjectbyname-reversing.md) para el proceso completo.
-- [ ] Reversear `ObpLookupObjectName` — la resolución real del objeto por nombre en el namespace del Object Manager
-
 
 ## Créditos y fuentes
 
