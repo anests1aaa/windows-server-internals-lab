@@ -208,37 +208,6 @@ Si `SeCreateAccessState` falla, el error se propaga directo como retorno de `ObO
 
 ---
 
-## 4. Punto abierto — `LEA ESI,[ESP+0x44]`
-
-Tres instrucciones después del `CALL` (`OR`, `JL`, `LEA`):
-
-```
-80125fe1  8d742444   lea  esi,[esp+0x44]
-```
-
-**Camino descartado:** en un primer intento se asumió que `[ESP+0x44]` en este punto resolvía a la misma dirección que `local_60` (`ebp-0x60`), razonando que `ESP` volvía a su valor original después de que `SeCreateAccessState` (asumido `stdcall`) limpiara sus propios 4 argumentos. **Confirmado en vivo que es falso:**
-
-![kd: eip confirmado en NT!_ObOpenObjectByName+0x5b, esp/ebp en vivo, y el contenido de esp+44](img/obopenobjectbyname-kd-eip-confirmed-esp44-dump.png)
-
-```
-kd> r
-eax=00000000 ebx=0012f650 ecx=00001c68 edx=00000000 esi=00000000 edi=00000000
-eip=80125fe1 esp=fbce9d60 ebp=fbce9ea8
-
-NT!_ObOpenObjectByName+0x5b:
-80125fe1 8d742444   lea   esi,[esp+0x44]   ss:0010:fbce9da4=00001c67
-```
-
-`esp+0x44` = `fbce9da4`. `ebp-0x60` sería `fbce9e48` — **no coinciden**. La dirección real es `ebp-0x104` (`fbce9ea8 - fbce9da4 = 0x104`), una variable de stack distinta a `_Stack_74`, fuera del rango de esa struct. La cuenta original asumía mal el efecto neto de `ESP` alrededor del `call`; queda sin resolver dónde está el error exacto de esa derivación.
-
-**Sin confirmar todavía:**
-- Qué variable es `ebp-0x104` y qué representa el valor `0x00001c67` que contiene.
-- Qué bits define el campo `Flags` de `_ACCESS_STATE` (no documentado en este DDK).
-
-**Breakpoint actual:** `NT!_ObOpenObjectByName+0x5b` (`80125fe1`), `esp=fbce9d60`, `ebp=fbce9ea8`.
-
----
-
 ## Referencias
 
 - NT DDK octubre 1994 — `ddk_extract/INC/NTDDK.H`, `NTDEF.H`, `NTSTATUS.H`
