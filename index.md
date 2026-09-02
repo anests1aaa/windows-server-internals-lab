@@ -14,6 +14,7 @@ Laboratorio de reversing de **Windows NT 3.1 Advanced Server** en QEMU/KVM, usad
 3. [Fase 3 — Visual C++ y DDK](./03-visual-c-ddk-setup.html) — toolchain de compilación de drivers, primer driver real compilado y verificado en vivo
 4. [Fase 4 — NtOpenFile](./04-ntopenfile-reversing.html) — `NtOpenFile` como wrapper delgado sobre `IoCreateFile`, aislando funciones del kernel una por una con el kernel debugger
 5. [Fase 5 — IoCreateFile](./05-iocreatefile-reversing.html) — reversing completo con Ghidra: tipos DDK auténticos, `RequestorMode`, frame SEH, validaciones de usermode, armado del `OPEN_PACKET` y entrega a `ObOpenObjectByName`
+6. [Fase 6 — ObOpenObjectByName](./06-obopenobjectbyname-reversing.html) — validación de entrada, armado del `ACCESS_STATE` vía `SeCreateAccessState` (confirmado en vivo con `i386kd`), y el offset `+0x38` de la struct opaca `_OBJECT_TYPE`
 
 ## Créditos
 
