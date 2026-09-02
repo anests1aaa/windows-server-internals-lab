@@ -26,26 +26,11 @@ NTSTATUS NtOpenFile(
 );
 ```
 
-**14 pushes = 56 bytes = 14 dwords**, exactamente la firma completa de `IoCreateFile`:
+### `NtOpenFile` es un wrapper delgado
 
-```c
-NTSTATUS IoCreateFile(
-    PHANDLE            FileHandle,        // forward arg1
-    ACCESS_MASK        DesiredAccess,     // forward arg2
-    POBJECT_ATTRIBUTES ObjectAttributes,  // forward arg3
-    PIO_STATUS_BLOCK   IoStatusBlock,     // forward arg4
-    PLARGE_INTEGER     AllocationSize,    // NULL
-    ULONG              FileAttributes,    // 0
-    ULONG              ShareAccess,       // forward arg5
-    ULONG              Disposition,       // FILE_OPEN (1) — constante
-    ULONG              CreateOptions,     // forward arg6 (OpenOptions)
-    PVOID              EaBuffer,          // NULL
-    ULONG              EaLength,          // 0
-    CREATE_FILE_TYPE   CreateFileType,    // CreateFileTypeNone (0)
-    PVOID              ExtraCreateParameters, // NULL
-    ULONG              Options            // 0
-);
-```
+Un **wrapper** es una función que no tiene lógica propia — solo prepara los datos y se los pasa a otra función que hace el trabajo real, a veces agregando valores por defecto que la función interna necesita pero que el wrapper no expone al caller. Acá, `NtOpenFile` recibe sus 6 parámetros, arma un `push` por cada uno de los **14 parámetros** que espera `IoCreateFile` — 6 reenviados tal cual (`FileHandle`, `DesiredAccess`, `ObjectAttributes`, `IoStatusBlock`, `ShareAccess`, `OpenOptions`→`CreateOptions`) y los 8 restantes completados con constantes fijas (`FILE_OPEN`, `CreateFileTypeNone`, `NULL`, `0`) — y llama a `IoCreateFile` directo. Es, literalmente, una cadena de `push`/`push`/`push`/`call` sin ningún `if` de por medio.
+
+La firma completa de `IoCreateFile` y el detalle de qué constante llena cada uno de esos 8 parámetros están en la Parte 2.
 
 ---
 
