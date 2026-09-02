@@ -276,6 +276,30 @@ Libera `unaff_EDI` si se llegó a alocar algo (probablemente un buffer intermedi
 
 ---
 
+## 5. Cierre — `ObpCreateHandle` y limpieza final
+
+Último tramo de la función, con las 4 llamadas restantes confirmadas por símbolo en `i386kd`:
+
+![kd: ObpCreateHandle, ObDereferenceObject, ObpLeaveRootDirectoryMutex y SeDeleteAccessState confirmados por símbolo](img/obopenobjectbyname-kd-createhandle-cleanup-confirmed.png)
+
+```
+80126117  call   NT!_ObpCreateHandle (801246a6)
+80126127  call   NT!_ObDereferenceObject (80113106)
+80126135  call   NT!_ObpLeaveRootDirectoryMutex (80129966)
+80126163  call   NT!_SeDeleteAccessState (80168700)
+```
+
+- **`ObpCreateHandle`** — el camino de éxito: convierte el objeto ya resuelto por `ObpLookupObjectName` en el `HANDLE` de salida que espera el caller original.
+- **`ObDereferenceObject`** — camino de error después de `ObpCreateHandle`: si falla, decrementa el refcount del objeto ya referenciado por el lookup (patrón estándar de la API de NT).
+- **`ObpLeaveRootDirectoryMutex`** — libera el mutex que protege el `RootDirectory` (`OBJECT_ATTRIBUTES`, Sección 1) mientras se resolvía el path, solo si se había tomado (`cVar3 != '\0'`).
+- **`SeDeleteAccessState`** — contraparte de limpieza de `SeCreateAccessState` (Sección 3): libera el `ACCESS_STATE` armado en el stack si `ObOpenObjectByName` fue quien lo creó.
+
+Con esto se cierra el reversing completo de `ObOpenObjectByName` — las 9 funciones internas del cuerpo (`SeCreateAccessState`, `ObpCaptureObjectAttributes`, `SeCaptureSecurityDescriptor`, `ObpLookupObjectName`, `ExFreePool`, `ObpCreateHandle`, `ObDereferenceObject`, `ObpLeaveRootDirectoryMutex`, `SeDeleteAccessState`) confirmadas por símbolo en `i386kd`.
+
+**Próximo nivel de la pila:** `ObpLookupObjectName` — la resolución real del objeto por nombre en el namespace del Object Manager.
+
+---
+
 ## Referencias
 
 - NT DDK octubre 1994 — `ddk_extract/INC/NTDDK.H`, `NTDEF.H`, `NTSTATUS.H`
