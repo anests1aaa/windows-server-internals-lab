@@ -185,8 +185,9 @@ qemu-system-i386 -m 64 -hda nt31.img -boot c -M pc,acpi=off -cpu 486
   → Ver [04-ntopenfile-reversing.md](./04-ntopenfile-reversing.md) para el proceso.
 - [x] Reversear `IoCreateFile` completo con Ghidra (tipos DDK auténticos, frame SEH, validaciones de usermode, `OPEN_PACKET`, entrega a `ObOpenObjectByName`)
   → Ver [05-iocreatefile-reversing.md](./05-iocreatefile-reversing.md) para el proceso completo.
-- [ ] Reversear `ObOpenObjectByName` — el siguiente nivel de la pila de llamadas desde `IoCreateFile` (en curso)
-  → Ver [06-obopenobjectbyname-reversing.md](./06-obopenobjectbyname-reversing.md): validación de entrada, `SeCreateAccessState` confirmado en vivo, offset `+0x38` de `_OBJECT_TYPE`.
+- [x] Reversear `ObOpenObjectByName` completo (validación de entrada, `SeCreateAccessState`, `ObpCaptureObjectAttributes`, `SeCaptureSecurityDescriptor`, entrega a `ObpLookupObjectName`, limpieza con `ExFreePool`)
+  → Ver [06-obopenobjectbyname-reversing.md](./06-obopenobjectbyname-reversing.md) para el proceso completo.
+- [ ] Reversear `ObpLookupObjectName` — la resolución real del objeto por nombre en el namespace del Object Manager
 
 
 ## Créditos y fuentes

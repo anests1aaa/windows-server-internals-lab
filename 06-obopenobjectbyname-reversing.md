@@ -208,6 +208,74 @@ Si `SeCreateAccessState` falla, el error se propaga directo como retorno de `ObO
 
 ---
 
+## 4. Captura de `ObjectAttributes`, `SecurityDescriptor`, y entrega a `ObpLookupObjectName`
+
+Resto del cuerpo de la función, con las 4 llamadas restantes confirmadas por símbolo en `i386kd`:
+
+```c
+41  cVar3 = (char)((uint)local_8c >> 0x18);
+42  iVar2 = func_0x80125cb6(AccessMode,ObjectAttributes,local_78,&local_80);
+43  if (iVar2 < 0) goto joined_r0x80126054;
+44  AccessState->SecurityDescriptor = (PSECURITY_DESCRIPTOR)0x0;
+45  if (iStack_7c != 0) {
+46    iVar2 = func_0x80176510(iStack_7c,AccessMode,1,0,&stack0xffffff64);
+47    if (iVar2 < 0) goto joined_r0x80126054;
+48    AccessState->SecurityDescriptor = unaff_ESI;
+49  }
+50  iVar2 = func_0x80125596(local_88,auStack_94,local_80,ObjectType,AccessMode,ObjectAttributes,
+                             unaff_EDI,0,AccessState,&stack0xffffff5b,&stack0xffffff5c);
+53  if (unaff_EDI != 0) {
+54    func_0x801167f6(unaff_EDI);
+55  }
+```
+
+### `func_0x80125cb6` = `ObpCaptureObjectAttributes`
+
+```
+80126006  e8abfcffff   call   NT!_ObpCaptureObjectAttributes (80125cb6)
+```
+
+Mismo rol que `ObpCaptureObjectAttributes`/probing ya visto en `IoCreateFile`, aplicado acá al propio `OBJECT_ATTRIBUTES`: si `AccessMode == UserMode`, probea que la struct y el `UNICODE_STRING` de `ObjectName` sean memoria de usermode válida, copia los campos a un buffer de confianza en modo kernel (mitigación TOCTOU — evita que otro thread modifique la memoria de usermode entre la validación y el uso), copia el nombre a pool paginado, y valida `Attributes` contra `OBJ_VALID_ATTRIBUTES`. Sus salidas (`local_78`, `local_80`, y muy probablemente `iStack_7c` — contiguo en el stack, `ebp-0x7c` al lado de `ebp-0x78`) alimentan el resto de la función.
+
+### `func_0x80176510` = `SeCaptureSecurityDescriptor`
+
+![kd: SeCaptureSecurityDescriptor y ObpLookupObjectName confirmados por símbolo](img/obopenobjectbyname-kd-securedescriptor-lookupobjectname-confirmed.png)
+
+```
+80126043  e8c8040500   call   NT!_SeCaptureSecurityDescriptor (80176510)
+```
+
+`iStack_7c` es candidato fuerte a ser el `SecurityDescriptor` capturado desde `ObjectAttributes` (por la salida contigua de `ObpCaptureObjectAttributes` y porque calza como 1er argumento de una función que "captura un security descriptor"). El `if (iStack_7c != 0)` solo entra si el caller pidió un `SecurityDescriptor` nuevo al abrir — en la corrida confirmada en vivo, `IoCreateFile` no pasó ninguno (`iStack_7c == 0`, confirmado con `db esp+3c`), así que la rama se saltea y `AccessState->SecurityDescriptor` queda en `NULL`.
+
+### `func_0x80125596` = `ObpLookupObjectName` — la función principal
+
+```
+80126091  e800f5ffff   call   NT!_ObpLookupObjectName (80125596)
+```
+
+Acá es donde termina yendo todo lo que `ObOpenObjectByName` preparó hasta ahora: `ObjectAttributes` capturado, `AccessState` armado, `SecurityDescriptor` capturado si correspondía. Es la resolución real del objeto por nombre en el namespace del Object Manager — el próximo nivel de la pila a reversear.
+
+### `func_0x801167f6` = `ExFreePool` — limpieza, no manejo de error
+
+![kd: ExFreePool confirmado por símbolo](img/obopenobjectbyname-kd-exfreepool-cleanup-confirmed.png)
+
+```
+801260a4  e84d07ffff   call   NT!_ExFreePool (801167f6)
+```
+
+Libera `unaff_EDI` si se llegó a alocar algo (probablemente un buffer intermedio de `ObpCaptureObjectAttributes` o del propio lookup) — corre sin importar si `ObpLookupObjectName` tuvo éxito o falló, mismo patrón de epílogo ya visto en `IoCreateFile`.
+
+### Resumen del flujo completo
+
+1. `NULL`-check básico de `ObjectAttributes` → `STATUS_INVALID_PARAMETER` si falta.
+2. `SeCreateAccessState` → arma el `AccessState` (si no vino provisto desde afuera).
+3. `ObpCaptureObjectAttributes` → captura/valida `ObjectAttributes` de verdad.
+4. Si el caller pidió `SecurityDescriptor` → `SeCaptureSecurityDescriptor` lo captura.
+5. `ObpLookupObjectName` → resolución real del objeto por nombre.
+6. `ExFreePool` de limpieza.
+
+---
+
 ## Referencias
 
 - NT DDK octubre 1994 — `ddk_extract/INC/NTDDK.H`, `NTDEF.H`, `NTSTATUS.H`
