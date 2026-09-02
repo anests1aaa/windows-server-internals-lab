@@ -149,9 +149,3 @@ Tras el reinicio automático (tras "The MS-DOS based portion of Setup is now com
 ```bash
 qemu-system-i386 -m 64 -hda nt31.img -boot c -M pc,acpi=off -cpu 486
 ```
-
-## Créditos y fuentes
-
-- [WinWorld](https://winworldpc.com) — preservación de software abandonware
-- [Computer History Wiki — Installing Windows NT 3.1 on Qemu](https://gunkies.org/wiki/Installing_Windows_NT_3.1_on_Qemu) — confirmación del bug de CPU Pentium
-- *Inside Windows NT* — Helen Custer (Microsoft Press, 1992)

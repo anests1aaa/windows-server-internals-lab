@@ -162,7 +162,6 @@ Esto detiene la ejecución del kernel remoto en el punto exacto donde estaba, y 
 
 Ejemplo de `x` recorriendo el namespace del Object Manager (`nt!_Ob*`) y las syscalls `Nt*` de creación de proceso/hilo/sección — útil para ubicar puntos de entrada antes de reversear una función puntual:
 
-![x nt!_Ob* listando símbolos del Object Manager](img/kd-x-nt-ob-symbols.png)
 ![x nt!_Nt* listando NtOpenFile, NtCreateSection, NtCreateProcess, NtCreateThread](img/kd-x-nt-createprocess-chain-symbols.png)
 
 Ejemplo de sesión real:
