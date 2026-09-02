@@ -11,90 +11,20 @@ Reversing de la cadena completa que dispara la apertura de un archivo desde `hel
 
 ## Parte 1 — NtOpenFile: wrapper delgado sobre IoCreateFile
 
-### Origen de los bytes
+### Firma de la función
 
-Dump crudo capturado desde el debugger kernel (`i386kd`):
+`NtOpenFile` recibe **6 parámetros** (stdcall):
 
+```c
+NTSTATUS NtOpenFile(
+    OUT PHANDLE            FileHandle,
+    IN  ACCESS_MASK        DesiredAccess,
+    IN  POBJECT_ATTRIBUTES ObjectAttributes,
+    OUT PIO_STATUS_BLOCK   IoStatusBlock,
+    IN  ULONG              ShareAccess,
+    IN  ULONG              OpenOptions
+);
 ```
-kd> db 801690d0 L(80169110 - 801690d0)
-801690d0  6a 00 6a 00 6a 00 6a 00-8b 44 24 28 6a 00 50 8b  j.j.j.j..D$(j.P.
-801690e0  44 24 2c 6a 01 50 6a 00-8b 44 24 34 6a 00 50 8b  D$,j.Pj..D$4j.P.
-801690f0  44 24 38 50 8b 44 24 38-50 8b 44 24 38 50 e8 3d  D$8P.D$8P.D$8P.=
-80169100  f6 ff ff c2 18 00 8d 49-00 8d a4 24 00 00 00 00  .......I...$....
-```
-
-Guardado en `code/dumps/ntopenfile.bin` (bytes crudos) y `code/dumps/ntopenfile.log` (transcript del debugger). Verificado que ambos coinciden byte a byte.
-
-### Desensamblado
-
-| Dirección  | Bytes                  | Instrucción              |
-|------------|-------------------------|---------------------------|
-| 801690d0   | `6a 00`                | `push 0x0`                |
-| 801690d2   | `6a 00`                | `push 0x0`                |
-| 801690d4   | `6a 00`                | `push 0x0`                |
-| 801690d6   | `6a 00`                | `push 0x0`                |
-| 801690d8   | `8b 44 24 28`          | `mov eax, [esp+0x28]`     |
-| 801690dc   | `6a 00`                | `push 0x0`                |
-| 801690de   | `50`                   | `push eax`                |
-| 801690df   | `8b 44 24 2c`          | `mov eax, [esp+0x2c]`     |
-| 801690e3   | `6a 01`                | `push 0x1`                |
-| 801690e5   | `50`                   | `push eax`                |
-| 801690e6   | `6a 00`                | `push 0x0`                |
-| 801690e8   | `8b 44 24 34`          | `mov eax, [esp+0x34]`     |
-| 801690ec   | `6a 00`                | `push 0x0`                |
-| 801690ee   | `50`                   | `push eax`                |
-| 801690ef   | `8b 44 24 38`          | `mov eax, [esp+0x38]`     |
-| 801690f3   | `50`                   | `push eax`                |
-| 801690f4   | `8b 44 24 38`          | `mov eax, [esp+0x38]`     |
-| 801690f8   | `50`                   | `push eax`                |
-| 801690f9   | `8b 44 24 38`          | `mov eax, [esp+0x38]`     |
-| 801690fd   | `50`                   | `push eax`                |
-| 801690fe   | `e8 3d f6 ff ff`       | `call 0x80168740`         |
-| 80169103   | `c2 18 00`             | `ret 0x18`                |
-| 80169106   | `8d 49 00`              | `lea ecx,[ecx+0x0]` (padding) |
-| 80169109   | `8d a4 24 00 00 00 00` | `lea esp,[esp+0x0]` (padding) |
-
-**No hay prólogo** (`push ebp`/`mov ebp,esp` o `sub esp,N`): la función arranca directo con `push` y direcciona todo vía `[esp+N]`, sin frame pointer (build optimizado, FPO). Esto confirma que `801690d0` es el **primer byte** de `NtOpenFile` — en ese punto `esp` apunta a la dirección de retorno del caller.
-
-Confirmado en vivo con `u` (desensamblado del propio debugger, coincide instrucción a instrucción con la tabla de arriba) y con un breakpoint en `NtOpenFile` que cae justo en el `call`:
-
-![Desensamblado de NtOpenFile mostrando el call a NT!_IoCreateFile](img/kd-u-ntopenfile-calls-iocreatefile.png)
-![Breakpoint en NtOpenFile deteniéndose en el call a IoCreateFile](img/kd-bp-ntopenfile-at-iocreatefile-call.png)
-
-En ambas capturas, `i386kd` resuelve `80168740` directo como `NT!_IoCreateFile` — confirma sin ambigüedad que la función **sí tiene símbolo público** (no hubo que inferir el nombre por firma/comportamiento).
-
-### Reconstrucción del stack (orden de push, ESP relativo a la entrada de la función = `ESP0`)
-
-`NtOpenFile(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, ShareAccess, OpenOptions)` — stdcall, 6 args:
-
-| Offset desde ESP0 | Contenido en `[ESP0+N]` |
-|---|---|
-| +0x00 | dirección de retorno |
-| +0x04 | arg1 `FileHandle` |
-| +0x08 | arg2 `DesiredAccess` |
-| +0x0C | arg3 `ObjectAttributes` |
-| +0x10 | arg4 `IoStatusBlock` |
-| +0x14 | arg5 `ShareAccess` |
-| +0x18 | arg6 `OpenOptions` |
-
-Siguiendo cada `push`/`mov` y recalculando el offset real contra `ESP0` (restando lo que ya se apiló), el stack que se arma para el `call 0x80168740` queda así, **en orden cronológico de push** (que en `stdcall` es el último parámetro del callee primero):
-
-| # push | Valor | Origen | Parámetro de `IoCreateFile` (hipótesis) |
-|---|---|---|---|
-| 1 | `0x0` | inmediato | `Options` = 0 |
-| 2 | `0x0` | inmediato | `ExtraCreateParameters` = NULL |
-| 3 | `0x0` | inmediato | `CreateFileType` = `CreateFileTypeNone` (0) |
-| 4 | `0x0` | inmediato | `EaLength` = 0 |
-| 5 | `0x0` | inmediato | `EaBuffer` = NULL |
-| 6 | `eax` = `[ESP0+0x18]` | **arg6 forward** | `CreateOptions` = `OpenOptions` |
-| 7 | `0x1` | inmediato | `Disposition` = `FILE_OPEN` (1) |
-| 8 | `eax` = `[ESP0+0x14]` | **arg5 forward** | `ShareAccess` = `ShareAccess` |
-| 9 | `0x0` | inmediato | `FileAttributes` = 0 |
-| 10 | `0x0` | inmediato | `AllocationSize` = NULL |
-| 11 | `eax` = `[ESP0+0x10]` | **arg4 forward** | `IoStatusBlock` = `IoStatusBlock` |
-| 12 | `eax` = `[ESP0+0x0C]` | **arg3 forward** | `ObjectAttributes` = `ObjectAttributes` |
-| 13 | `eax` = `[ESP0+0x08]` | **arg2 forward** | `DesiredAccess` = `DesiredAccess` |
-| 14 | `eax` = `[ESP0+0x04]` | **arg1 forward** | `FileHandle` = `FileHandle` |
 
 **14 pushes = 56 bytes = 14 dwords**, exactamente la firma completa de `IoCreateFile`:
 
@@ -117,19 +47,9 @@ NTSTATUS IoCreateFile(
 );
 ```
 
-### Conclusión de la Parte 1
-
-- `NtOpenFile` es, tal cual se sospechaba, un **wrapper delgado sin lógica propia**: solo arma el stack de `IoCreateFile` completando los 8 parámetros que `NtOpenFile` no expone con constantes fijas (`FILE_OPEN`, `CreateFileTypeNone`, NULLs, ceros) y reenvía sus 6 argumentos tal cual.
-- `ret 0x18` (24 = 6×4 bytes) confirma el cierre del frame de `NtOpenFile` con sus 6 parámetros stdcall — cierra el análisis del límite de la función.
-- El padding final (`8d 49 00` / `8d a4 24 00000000`, formas de NOP multi-byte típicas de MSVC) alinea el próximo símbolo, patrón normal en builds de esta época.
-
 ---
 
 ## Parte 2 — IoCreateFile
-
-**Función objetivo:** `NT!_IoCreateFile` en `ntoskrnl.exe` (build 3.10.5098.1)
-**Dirección base:** `0x80168740`
-**Herramientas:** Ghidra 11 + `i386kd` (kernel debugger NT 3.1)
 
 ### 1. Reconstrucción de tipos DDK auténticos para Ghidra
 
@@ -184,30 +104,9 @@ IoCreateFile(
 
 Luego en Ghidra: **File → Parse C Source** → agregar `ntddk_flat.h` → **Parse to Program** → guarda como `nt31_ddk.gdt` en el Data Type Manager.
 
-### 2. Firma de la función
+Firma resultante en el Decompile de Ghidra, con los tipos DDK ya aplicados:
 
-`IoCreateFile` recibe **14 parámetros** (stdcall):
-
-| # | Nombre | Tipo | Descripción |
-|---|--------|------|-------------|
-| 1 | `FileHandle` | `PHANDLE` | OUT — handle resultante |
-| 2 | `DesiredAccess` | `ACCESS_MASK` | permisos solicitados |
-| 3 | `ObjectAttributes` | `POBJECT_ATTRIBUTES` | nombre, atributos |
-| 4 | `IoStatusBlock` | `PIO_STATUS_BLOCK` | OUT — resultado de la operación |
-| 5 | `AllocationSize` | `PLARGE_INTEGER` | tamaño inicial (opcional) |
-| 6 | `FileAttributes` | `ULONG` | atributos del archivo |
-| 7 | `ShareAccess` | `ULONG` | compartición |
-| 8 | `Disposition` | `ULONG` | CREATE/OPEN/TRUNCATE... |
-| 9 | `CreateOptions` | `ULONG` | opciones del IRP |
-| 10 | `EaBuffer` | `PVOID` | Extended Attributes (opcional) |
-| 11 | `EaLength` | `ULONG` | longitud del EaBuffer |
-| 12 | `CreateFileType` | `CREATE_FILE_TYPE` | None / NamedPipe / Mailslot |
-| 13 | `ExtraCreateParameters` | `PVOID` | parámetros extra (opcional) |
-| 14 | `Options` | `ULONG` | flags internos del kernel |
-
-Pseudocódigo de Ghidra tras aplicar los tipos DDK:
-
-![Ghidra decompiler mostrando IoCreateFile con tipos DDK aplicados](img/iocreatefile-ghidra-pseudocode-header.png)
+![Ghidra decompiler mostrando la firma de IoCreateFile con los tipos DDK aplicados](img/iocreatefile-ghidra-signature-ddk-types.png)
 
 ### 3. Determinación de RequestorMode
 
@@ -226,23 +125,9 @@ if ((param_14 & 0x100) != 0) {
 }
 ```
 
-- `KernelMode = 0` → el caller es de confianza, no se validan punteros
-- `UserMode = 1` → el caller viene de ring 3, hay que validar todo
-
 ### 4. Estructura SEH — el frame de excepción MSVC
 
 `IoCreateFile` usa `__try/__except` para proteger los accesos a memoria de usermode. El compilador MSVC para x86 implementa esto con una cadena de registros de excepción instalados en `FS:[0]`.
-
-#### Layout del frame en el stack
-
-El array `local_3c[4]` mapea el registro de excepción MSVC:
-
-| Índice | Offset (ebp) | Campo | Valor |
-|--------|-------------|-------|-------|
-| `[0]` | `[ebp-0x38]` | `Next` | puntero al frame anterior en `FS:[0]` |
-| `[1]` | `[ebp-0x34]` | `Handler` | `0x8010fdb8` = `_except_handler3` |
-| `[2]` | `[ebp-0x30]` | `ScopeTable` | `0x8019db00` |
-| `[3]` | `[ebp-0x2c]` | `TryLevel` | `-1` = inactivo, `0` = try#0, `1` = try#1 |
 
 Ghidra muestra los valores hardcodeados antes de instalar el frame:
 
@@ -262,27 +147,11 @@ kd> dd 8019db00 L6
 8019db0c: ffffffff 801689c6 801689d6
 ```
 
-| TryLevel | PreviousTryLevel | Filter | HandlerBlock |
-|----------|-----------------|--------|--------------|
-| 0 | `0xffffffff` (-1) | `0x801688b8` | `0x801688c8` |
-| 1 | `0xffffffff` (-1) | `0x801689c6` | `0x801689d6` |
-
-- **`PreviousTryLevel = -1`** en ambos: son bloques independientes (no anidados).
-- **Filter**: función que evalúa la excepción. Si devuelve `1` (`EXCEPTION_EXECUTE_HANDLER`) → ejecutar el handler.
-- **HandlerBlock**: código del `__except { }` que se ejecuta si el filter lo aprueba.
-- **TryLevel = 0** activa el try#0; **TryLevel = -1** indica que no hay try activo.
-
-`_except_handler2` capturado en i386kd (el dispatcher de excepciones del runtime MSVC):
-
-![i386kd mostrando el prologue de _except_handler2](img/iocreatefile-kd-except-handler2.png)
-
 ### 5. Flujo del else — rama UserMode
 
 Cuando `RequestorMode == UserMode` (≠ `'\0'`), la función debe validar que todos los punteros que recibió de usermode son realmente escribibles antes de usarlos. Progresión completa del bloque en Ghidra — desde el primer pase (`func_0x...` sin renombrar) hasta las cuatro funciones ya identificadas (`ProbeAndWriteHandle`, `ProbeForWrite`, `RtlConvertLongToLargeInteger`, `ProbeForRead`) y el panel de Listing correlacionando la dirección real:
 
-![Ghidra mostrando el bloque UserMode con ProbeAndWriteHandle y ProbeForWrite](img/iocreatefile-ghidra-usermode-probe-block.png)
-![Ghidra mostrando el bloque completo del if/else de AllocationSize, con ProbeAndWriteHandle, ProbeForWrite, RtlConvertLongToLargeInteger y ProbeForRead ya renombradas](img/iocreatefile-ghidra-allocationsize-branch.png)
-![Ghidra mostrando el código con los cuatro nombres reales aplicados: ProbeAndWriteHandle, ProbeForWrite, RtlConvertLongToLargeInteger, ProbeForRead](img/iocreatefile-ghidra-allocationsize-else-branch.png)
+![Ghidra mostrando el bloque completo del if/else de AllocationSize: ProbeAndWriteHandle, ProbeForWrite, RtlConvertLongToLargeInteger y ProbeForRead](img/iocreatefile-ghidra-allocationsize-else-branch.png)
 
 #### ¿Qué hace `Probe` realmente?
 
@@ -320,20 +189,6 @@ Llamada como `ProbeForWrite(IoStatusBlock, 8, 4)`:
 - Alineación: `4` bytes
 
 Valida que `IoStatusBlock` está completamente en espacio de usuario y es escribible.
-
-**Por qué acá es solo `ProbeForWrite` y no `ProbeAndWrite` como con `FileHandle`:** `IoStatusBlock` es el resultado *final* de la operación (`Status`/`Information`) — algo que en este punto de la función todavía no existe. El valor real recién se conoce mucho más adelante, adentro de `IopCreateFile`, después de que el filesystem driver completa el IRP (potencialmente de forma asíncrona). El trabajo se divide en dos: **validar ya** (fail-fast — mejor descubrir un puntero inválido acá, con un error simple, que mil líneas después en medio de una IRP ya en curso) y **escribir después**, cuando el resultado real esté disponible.
-
-#### RtlConvertLongToLargeInteger (`0x80160084`)
-
-Cuando `AllocationSize == NULL`, la función crea un `LARGE_INTEGER` de valor cero para usar como tamaño por defecto. `RtlConvertLongToLargeInteger(0)` extiende el entero `0` a 64 bits.
-
-Confirmado en vivo con un breakpoint en `IoCreateFile+0x84`: el `jz` salta directo al `push 0x0` + `call NT!_RtlConvertLongToLargeInteger`, saltándose por completo la rama de `ProbeForRead` — la prueba de que cuando `AllocationSize` es `NULL` nunca se toca memoria de usermode para este parámetro:
-
-![i386kd con breakpoint en IoCreateFile+0x84 mostrando el salto directo a RtlConvertLongToLargeInteger cuando AllocationSize es NULL](img/iocreatefile-kd-allocationsize-null-confirmed.png)
-
-#### ProbeForRead (`0x801136c6`)
-
-Rama `else` — cuando el caller sí mandó un `AllocationSize` real (`!= NULL`), visible en la captura de arriba: `ProbeForRead(AllocationSize, 8, 4)` seguido de `local_24 = AllocationSize->field0`. Mismo patrón que `ProbeForWrite`, pero para **lectura**: valida que los 8 bytes de `AllocationSize` son legibles desde usermode antes de desreferenciarlos. Recién con el puntero validado, `local_24 = AllocationSize->field0` copia el valor a la variable local del kernel — la misma defensa TOCTOU explicada arriba: se lee una sola vez, apenas validado, y el resto de la función ya no vuelve a tocar `AllocationSize` directamente.
 
 ### 6. Flujo completo de IoCreateFile
 
@@ -380,7 +235,7 @@ El flag `0x100` es el único que afecta el flujo de `IoCreateFile` directamente:
 
 ### 8. Validación de parámetros — el `if` gigante
 
-Después de resolver `AllocationSize` (Sección 5), y antes de tocar `EaBuffer` o llamar a `IopCreateFile`, la función corre un único `if` con toda la validación cruzada de `FileAttributes`, `ShareAccess`, `Disposition`, `CreateOptions` y `DesiredAccess`. Si cualquier condición da cierto, corta con `STATUS_INVALID_PARAMETER`:
+Antes de tocar `EaBuffer` o llamar a `IopCreateFile`, la función corre un único `if` con toda la validación cruzada de `FileAttributes`, `ShareAccess`, `Disposition`, `CreateOptions` y `DesiredAccess`. Si cualquier condición da cierto, corta con `STATUS_INVALID_PARAMETER`:
 
 ![Ghidra mostrando el if gigante de validación de parámetros en IoCreateFile](img/iocreatefile-ghidra-parameter-validation-giant-if.png)
 
@@ -391,14 +246,6 @@ Después de resolver `AllocationSize` (Sección 5), y antes de tocar `EaBuffer` 
 ```
 
 `LAB_80168c55` es el punto de salida de error común de la función — cierra el `__try` y retorna sin haber llamado nunca a `IopCreateFile`.
-
-#### Los tres niveles de validación
-
-La expresión mezcla tres tipos de chequeo distintos:
-
-1. **Validez de un solo campo** — ¿el valor, aislado, es basura?
-2. **Mutua exclusión dentro de un mismo campo** — ¿pidió dos cosas contradictorias en el mismo parámetro?
-3. **Coherencia entre campos** — ¿lo que pidió en un parámetro tiene sentido dado lo que pidió en otro?
 
 #### 1. Validez individual de cada campo
 
@@ -416,16 +263,12 @@ La expresión mezcla tres tipos de chequeo distintos:
 #define FILE_ATTRIBUTE_XACTION_WRITE    0x00000400
 ```
 
-`ATOMIC_WRITE`/`XACTION_WRITE` son vestigios del diseño original de archivos transaccionales de NT, abandonado casi por completo — sobrevivieron como flags aceptados sin efecto real.
-
 **`(ShareAccess & 0xfffffff8) != 0`** — complemento de `0x7`. El header solo documenta dos flags públicos:
 
 ```c
 #define FILE_SHARE_READ                 0x00000001
 #define FILE_SHARE_WRITE                0x00000002
 ```
-
-pero la máscara del kernel ya deja pasar un tercer bit (`0x4`) sin nombre público en este DDK — casi con certeza el precursor de lo que en versiones posteriores de NT se documentó como `FILE_SHARE_DELETE`.
 
 **`(5 < Disposition)`** — a diferencia de los anteriores no es una máscara de bits, es un rango: `Disposition` es un valor enumerado secuencial (`0`-`5`), y el header confirma el límite con su propia constante:
 
@@ -438,18 +281,6 @@ pero la máscara del kernel ya deja pasar un tercer bit (`0x4`) sin nombre públ
 ```c
 #define FILE_VALID_OPTION_FLAGS          0x00007FFF
 ```
-
-#### 2. Mutua exclusión dentro de un mismo campo
-
-**`(CreateOptions & 0x10) != 0 && (CreateOptions & 0x20) != 0`** — `FILE_SYNCHRONOUS_IO_ALERT` y `FILE_SYNCHRONOUS_IO_NONALERT` no pueden estar los dos prendidos: son dos modos alternativos del mismo flag `Alertable` que `KeWaitForSingleObject` recibe internamente — alertable (la espera se puede interrumpir con una APC en cola) vs. no-alertable (ignora APCs pendientes hasta que termine la I/O). Pedir los dos es una contradicción lógica, no una combinación válida.
-
-#### 3. Coherencia entre campos
-
-**`(CreateOptions & 0x30) != 0 && (DesiredAccess & 0x100000) == 0`** — pidió I/O síncrono (`0x30` = `SYNC_ALERT | SYNC_NONALERT`) pero no pidió `SYNCHRONIZE` (`0x100000`) al abrir el handle. Un file object se puede esperar como cualquier otro kernel object (evento, mutex) — para que el I/O Manager señalice y el caller pueda bloquearse hasta que termine, el handle necesita el derecho `SYNCHRONIZE`, igual que necesitarías ese derecho para un `WaitForSingleObject`.
-
-**`(CreateOptions & 0x1000) != 0 && (DesiredAccess & 0x10000) == 0`** — pidió `FILE_DELETE_ON_CLOSE` (`0x1000`) pero no pidió `DELETE` (`0x10000`) en `DesiredAccess`. Es la regla documentada de la API: no podés marcar un archivo para que se borre solo al cerrar el handle si nunca pediste permiso de borrado al abrirlo — de lo contrario sería una forma de esquivar el chequeo de autorización normal de un delete.
-
-**`(CreateOptions & 8) != 0 && (DesiredAccess & 4) != 0`** — `FILE_NO_INTERMEDIATE_BUFFERING` (I/O sin caché, todo alineado a sector) junto con `FILE_APPEND_DATA` (el kernel decide automáticamente que cada write cae al EOF actual). *(Hipótesis, no confirmada mirando `IopCreateFile`)*: el EOF de un archivo no tiene por qué caer en un límite de sector, así que delegarle al kernel la posición del write y a la vez exigir alineación estricta de sector son responsabilidades que se contradicen.
 
 #### Bloque especial: apertura de directorios
 
@@ -474,38 +305,9 @@ Cualquier otro bit de `CreateOptions` (buffering, oplocks, EAs — todo lo que a
 
 ### 9. Validación específica por `CreateFileType` (NamedPipe / Mailslot)
 
-Un segundo bloque de validación, estructuralmente separado del `if` gigante de la Sección 8, cubre los dos tipos especiales de `CreateFileType` (recordar el enum de la Sección 2 — `CreateFileTypeNone = 0`, `CreateFileTypeNamedPipe = 1`, `CreateFileTypeMailslot = 2`, confirmado en `NTDDK.H`):
+Un segundo bloque de validación, estructuralmente separado del `if` gigante de la Sección 8, cubre los dos tipos especiales de `CreateFileType` (`CreateFileTypeNone = 0`, `CreateFileTypeNamedPipe = 1`, `CreateFileTypeMailslot = 2`, confirmado en `NTDDK.H`):
 
 ![Ghidra mostrando la validación de CreateFileType para NamedPipe y Mailslot](img/iocreatefile-ghidra-createfiletype-namedpipe-mailslot.png)
-
-El `if (CreateFileType != CreateFileTypeNone)` de afuera es un *guard clause*, no una regla de negocio — a diferencia de los bitmasks de la Sección 8, `CreateFileType` es un enum de un solo valor, así que "no es None" y "es NamedPipe" no son dos condiciones independientes: si es `NamedPipe`, automáticamente ya es distinto de `None`. El gate solo existe para saltear todo el bloque en el caso común (abrir un archivo normal).
-
-#### Bloque `NamedPipe`
-
-Primero, `ExtraCreateParameters == NULL` → inválido (un pipe necesita esos parámetros extra para poder crearse). Después, un segundo `if` valida:
-
-- **Tres campos dentro de la estructura apuntada por `ExtraCreateParameters`** (offsets `0x0`, `0x4`, `0x8`), cada uno rechazado si vale más de `1`. No están en el DDK público de 1994 (es un detalle interno compartido entre el I/O Manager y `NPFS.SYS`), pero por documentación de NT bien conocida — *sin confirmar contra un header de esta build* — corresponden a:
-  ```c
-  typedef struct _NAMED_PIPE_CREATE_PARAMETERS {
-      ULONG NamedPipeType;    // offset 0x0 — 0 = byte stream, 1 = message
-      ULONG ReadMode;         // offset 0x4 — 0 = byte,       1 = message
-      ULONG CompletionMode;   // offset 0x8 — 0 = queue,      1 = complete
-      ...
-  } NAMED_PIPE_CREATE_PARAMETERS;
-  ```
-  Los tres son enums booleanos disfrazados de `ULONG` — mismo patrón "Tipo 1" de la Sección 8 (validez de un campo aislado), aplicado a campos de una estructura en vez de a un parámetro directo.
-- **`ShareAccess & 4`** — el mismo bit sin nombre público de la Sección 8 (precursor de `FILE_SHARE_DELETE`): un pipe no tiene semántica de "borrado" tipo archivo, se rechaza.
-- **`Disposition == 0`** (`FILE_SUPERSEDE`) combinado con `3 < Disposition` más abajo: el único rango que sobrevive es `1`-`3` (`FILE_OPEN`/`FILE_CREATE`/`FILE_OPEN_IF`) — mismo trío que quedó habilitado para directorios, porque un pipe tampoco tiene contenido para reemplazar.
-- **`CreateOptions & 0xffffffcd`** — complemento de `0x32`: solo `FILE_WRITE_THROUGH`, `FILE_SYNCHRONOUS_IO_ALERT`, `FILE_SYNCHRONOUS_IO_NONALERT` son válidos, un set todavía más chico que el de directorios.
-
-#### Bloque `Mailslot`
-
-Misma estructura (`ExtraCreateParameters == NULL` → inválido primero), pero sin el chequeo de campos internos — la estructura de mailslot no tiene esos tres enums booleanos. El segundo `if` valida:
-
-- **`ShareAccess & 4`** — mismo motivo que `NamedPipe`.
-- **`ShareAccess & 0xfffffffd) == 0`** — la primera vez que aparece `== 0` en vez de `!= 0`: la máscara `0xfffffffd` (complemento de `0x2`, `FILE_SHARE_WRITE`) agarra *todos los demás bits* de `ShareAccess`. Que el resultado sea `0` significa que no hay ningún bit prendido salvo, como mucho, `0x2` — en la práctica, exige que `FILE_SHARE_READ` (`0x1`) esté presente. *(Hipótesis, no confirmada)*: probablemente porque los clientes que le escriben mensajes al mailslot necesitan su propio handle de lectura simultáneo.
-- **`Disposition != 2`** — a diferencia de `NamedPipe`, un mailslot **solo** admite `FILE_CREATE`. No existe "conectarse" a un mailslot existente por esta vía — eso se hace abriendo el path como archivo común (`CreateFileTypeNone`).
-- **`CreateOptions & 0xffffffcd`** — mismo set válido que `NamedPipe`.
 
 ### 10. Bloque `EaBuffer` — try#1 (última parte de la rama UserMode)
 
@@ -514,33 +316,6 @@ Misma estructura (`ExtraCreateParameters == NULL` → inválido primero), pero s
 ![Ghidra mostrando el bloque de EaBuffer y try#1](img/iocreatefile-ghidra-eabuffer-try1-block.png)
 
 **Qué es `EaBuffer`:** parámetro 10, `PVOID` opcional a una cadena de **Extended Attributes** (EAs) — un resabio directo del **HPFS de OS/2**, heredado por compatibilidad con el subsistema OS/2 de NT. Cada EA es una `FILE_FULL_EA_INFORMATION` (confirmado en `NTDDK.H`: `NextEntryOffset`, `Flags`, `EaNameLength`, `EaValueLength`, `EaName[]` seguido del valor crudo), encadenadas entre sí. `EaLength` (parámetro 11) es el tamaño total en bytes de la cadena.
-
-**El gate:** `if (EaBuffer == NULL || EaLength == 0)` → caso vacío, `local_54 = NULL` y `local_50 = 0` (el par "buffer de EA ya copiado al kernel + su tamaño" que la función arma acá, sea vacío o real, y que viaja hacia el motor de creación en vez del `EaBuffer` original de usermode). Nota: la etiqueta `LAB_80168a60` cae justo dentro de este caso vacío — hay otro punto de la función, no visto en esta captura, que salta directo acá sin pasar por el chequeo.
-
-**Rama `else` (EA real, no reverseada por ahora):** cuando sí hay EAs, el bloque llama `ProbeForRead(EaBuffer, EaLength, 4)` (misma dirección `0x801136c6` que ya identificamos), reserva un buffer del kernel, copia el contenido a mano (DWORD a DWORD y después byte a byte), y valida el formato de la cadena con lo que parece ser `IoCheckEaBufferValidity` (firma `buffer, length, &ErrorOffset` — coincide con la función real documentada de NT). Queda pendiente de reversear en detalle — es la rama de compatibilidad con OS/2, no el camino común.
-
-**Confirmación en vivo con `i386kd`:** con un breakpoint en `IoCreateFile` (`bp 80168740`) disparado desde `hello.exe`, `dd esp L4` mostró la dirección de retorno como `80169103` — coincide *exacto* con el valor calculado a mano en la Parte 1 (`801690fe` + 5 bytes de `call` = `80169103`), confirmando en vivo que este `IoCreateFile` fue invocado desde `NtOpenFile`. Siguiendo la ejecución hasta la zona del `if` gigante y el gate de `CreateFileType`, el disassembly confirmó en vivo los offsets exactos de varios parámetros contra el frame (`ebp+0x8 + 4×(n-1)`), validando la aritmética que veníamos usando solo por cálculo:
-
-| Parámetro | Offset confirmado |
-|---|---|
-| `DesiredAccess` (2) | `[ebp+0xC]` |
-| `Disposition` (8) | `[ebp+0x24]` |
-| `CreateOptions` (9) | `[ebp+0x28]` |
-| `EaBuffer` (10) | `[ebp+0x2C]` |
-| `CreateFileType` (12) | `[ebp+0x34]` |
-
-En esta corrida en particular, `hello.exe` no usa Extended Attributes: `EaBuffer` llegó `NULL`, confirmando en vivo que se toma la rama vacía del gate — nunca se ejecuta el `else`:
-
-```
-80168953  0bf6          or  esi,esi
-80168955  0f8405010000  je  NT!_IoCreateFile+0x320 (80168a60)
-80168a60  c745b0000000    mov dword ptr [ebp-0x50],0x0
-80168a67  c745b400000000  mov dword ptr [ebp-0x4c],0x0
-```
-
-Con `esi` (`EaBuffer`) en `NULL`, el `je` salta directo a `80168a60` — exactamente la dirección de `LAB_80168a60` ya identificada en Ghidra. El `else` completo (`ProbeForRead`, la reserva y copia manual, la validación tipo `IoCheckEaBufferValidity`) queda salteado por completo; las dos instrucciones en el destino son el zero-init real detrás de `local_54 = NULL` / la longitud en `0`.
-
-![i386kd confirmando que con EaBuffer NULL se saltea el else y se salta directo a LAB_80168a60](img/iocreatefile-kd-eabuffer-null-skips-else.png)
 
 ### 11. Armado del `OPEN_PACKET` y llamada a `ObOpenObjectByName`
 
@@ -559,8 +334,6 @@ Con todas las validaciones pasadas, `IoCreateFile` arma la estructura que finalm
 ```
 
 Es un **`OPEN_PACKET`**: la estructura interna que el I/O Manager arma para pasarle al Object Manager genérico toda la información específica de creación de archivos. `local_7a = 0x40` acompaña a `Type` como el campo `Size` (mismo patrón de header `Type`+`Size` que usan otras estructuras visibles del Object Manager). Entre los campos que se ven armados: `local_5c = Disposition << 0x18 | CreateOptions` — empaqueta los dos en un solo `ULONG` (`Disposition` cabe en el byte alto porque nunca pasa de `5`, `CreateOptions` nunca pasa de 15 bits válidos según `FILE_VALID_OPTION_FLAGS` — Sección 8 — así que no hay superposición posible), además de `FileAttributes`, `ShareAccess`, `Options`, `CreateFileType` y `ExtraCreateParameters` copiados directo.
-
-**Por qué se arman acá y no se vuelven a usar:** el `OPEN_PACKET` es el `ParseContext` — un `PVOID` genérico que el Object Manager no interpreta, solo arrastra sin tocar hasta la rutina de parseo del tipo de objeto correspondiente (acá, la del filesystem). El campo `Type` es lo que le permite a esa rutina, del otro lado, confirmar en runtime que lo que recibió es realmente un `OPEN_PACKET` antes de confiar en el resto de sus campos — el tamaño/offsets de cada campo los conoce en tiempo de compilación (comparte la definición de la estructura con `IoCreateFile`, no depende de leerlo de la memoria).
 
 #### Los dos `ExInterlockedAddUlong` — contabilidad, no sincronización nueva
 
@@ -611,15 +384,6 @@ NTSTATUS ObOpenObjectByName(
 );
 ```
 
-Confirmado en vivo con `i386kd` — el debugger resuelve el símbolo directo, y el orden de `push` (inverso a la declaración en `stdcall`) confirma cada argumento contra offsets ya conocidos del propio frame de `IoCreateFile`:
-
-```
-80168b0f  mov eax,[ebp+0xc]    ; push eax   → DesiredAccess (mismo offset que el param. 2 de IoCreateFile)
-80168b15  mov al,[ebp-0x1]     ; push eax   → RequestorMode (AccessMode) — offset real confirmado
-80168b1b  mov eax,[ebp+0x10]   ; push eax   → ObjectAttributes (mismo offset que el param. 3 de IoCreateFile)
-80168b1f  call NT!_ObOpenObjectByName (80125f86)
-```
-
 ![i386kd confirmando la llamada a NT!_ObOpenObjectByName con el orden de push de cada argumento](img/iocreatefile-kd-obopenobjectbyname-args.png)
 
 Es el punto donde `IoCreateFile` entrega el control al Object Manager genérico — `ObpLookupObjectName` (ver Parte 3) resuelve el path, y cuando llega al filesystem driver, el `ParseContext` (`OPEN_PACKET`) es lo que le dice qué hacer específicamente con el archivo.
@@ -631,43 +395,6 @@ Al final del bloque, si se había reservado un buffer de EA en la Sección 10 (`
 Última parte de la función: qué hace `IoCreateFile` con lo que devolvió `ObOpenObjectByName`, y cómo cierra el `__try/__except` de la Sección 4 antes de retornar.
 
 ![Ghidra mostrando el epílogo de IoCreateFile: procesamiento del resultado y desarme del frame SEH](img/iocreatefile-ghidra-epilogue-return.png)
-
-```c
-if (local_54 != (undefined4 *)0x0) {
-    func_0x801167f6(local_54);
-}
-bVar3 = local_6c != -0x4155fdaf;
-if (-1 < (int)STATUS_ERR) {
-    if (!bVar3) {
-        *(uint *)(local_78 + 0x2c) = *(uint *)(local_78 + 0x2c) | 0x40000;
-        *FileHandle = local_18;
-        IoStatusBlock->Information = local_70;
-        IoStatusBlock->Status = local_74;
-        STATUS_ERR = local_74;
-        goto Exit_IoCreateFile;
-    }
-    if (-1 < (int)STATUS_ERR) {
-        func_0x80121d66(local_18);
-        STATUS_ERR = 0xc0000024;
-    }
-}
-if ((int)local_74 < 0) {
-    STATUS_ERR = local_74;
-    if ((local_74 & 0xc0000000) == 0x80000000) {
-        IoStatusBlock->Status = local_74;
-        IoStatusBlock->Information = local_70;
-    }
-}
-else if ((local_78 != 0) && (bVar3)) {
-    if (*(short *)(local_78 + 0x30) != 0) {
-        func_0x801167f6(*(undefined4 *)(local_78 + 0x34));
-    }
-    *(undefined4 *)(local_78 + 4) = 0;
-    func_0x80113106(local_78);
-}
-Exit_IoCreateFile:
-*unaff_FS_OFFSET = local_3c[0];
-```
 
 #### `NT_SUCCESS`, confirmado
 
@@ -683,8 +410,6 @@ Comparar `> -1` como entero con signo es lo mismo que `>= 0` — el compilador l
 
 `local_6c` es un campo del `OPEN_PACKET` (Sección 11) que se inicializaba en `0` antes de la llamada — pero `ObOpenObjectByName` (o, más probablemente, la rutina de parseo del filesystem a la que el Object Manager le reenvía el `ParseContext`) le escribe un valor nuevo *adentro* de esa misma memoria antes de retornar. Confirma algo importante: el `OPEN_PACKET` no es un parámetro de solo entrada — también es un canal de **salida**, el filesystem se comunica de vuelta con `IoCreateFile` escribiendo directamente en la estructura que recibió por puntero, no solo a través del valor de retorno de la función.
 
-`bVar3 = local_6c != -0x4155fdaf` compara ese campo contra una constante fija (`-0x4155fdaf`, sin confirmar contra ningún header — no encontré esta constante documentada en el DDK de 1994). Con el valor esperado (`bVar3 == false`) se toma el camino normal de éxito; si no matchea, algo salió distinto de lo esperado aunque el `STATUS_ERR` general haya dado éxito.
-
 #### Camino de éxito real
 
 Con `NT_SUCCESS(STATUS_ERR)` y `local_6c` en el valor esperado:
@@ -699,22 +424,6 @@ Si `STATUS_ERR` fue éxito pero `bVar3` es cierto (el `local_6c` no matcheó): c
 ```c
 #define STATUS_OBJECT_TYPE_MISMATCH      ((NTSTATUS)0xC0000024L)
 ```
-
-Lectura razonable: el Object Manager encontró y abrió *algo* con ese nombre — pero no es del tipo que `IoCreateFile` esperaba (no es un archivo), así que se descarta el handle y se reporta `STATUS_OBJECT_TYPE_MISMATCH` en vez de dejar pasar un handle a un objeto que no corresponde.
-
-#### Propagación de errores con severidad `Warning`
-
-```c
-if ((local_74 & 0xc0000000) == 0x80000000) {
-```
-
-`0xc0000000` son los dos bits de severidad de un `NTSTATUS` (bits 30-31); `0x80000000` es, confirmado en `NTDEF.H`:
-
-```c
-#define ERROR_SEVERITY_WARNING       0x80000000
-```
-
-Solo cuando `local_74` es específicamente un *warning* (no un error duro, no informacional) se propaga a `IoStatusBlock`. Distinción fina entre "falló" y "funcionó con reservas" — un warning todavía deja completar la operación, pero el caller necesita enterarse.
 
 #### Desarme del frame SEH
 
@@ -834,24 +543,6 @@ Layout estándar de 32 bits de NT: 16 bits bajos específicos de tipo, medio los
 
 ![Decompile de Ghidra: inicialización de Pointer_ObjectType, NULL-check de ObjectAttributes, rama AccessState==NULL](img/obopenobjectbyname-ghidra-entry-nullcheck-accessstate-branch.png)
 
-```c
-25  Pointer_ObjectType = (POBJECT_TYPE)0x0;
-26  local_88 = 0;
-27  if (ObjectAttributes == (POBJECT_ATTRIBUTES)0x0) {
-28      return -0x3fffffff3;
-29  }
-30  if (AccessState == (PACCESS_STATE)0x0) {
-31    if (ObjectType != (POBJECT_TYPE)0x0) {
-32      Pointer_ObjectType = ObjectType + 0x38;
-33    }
-34    iVar1 = func_0x80168610(&_Stack_74.PreviouslyGrantedAccess,DesiredAccess,Pointer_ObjectType);
-35    if (iVar1 < 0) {
-36      return iVar1;
-37    }
-38    AccessState = (PACCESS_STATE)&_Stack_74.PreviouslyGrantedAccess;
-39  }
-```
-
 **Línea 25-26:** `Pointer_ObjectType` (local, `POBJECT_TYPE`) y `local_88` arrancan en `0` — acumuladores que se llenan más adelante, no constantes.
 
 **Línea 27-28:** `ObjectAttributes` es el único parámetro no-`OPTIONAL` de verdad (sin nombre no hay nada que resolver) — primer chequeo defensivo, falla rápido con `STATUS_INVALID_PARAMETER` (`-0x3fffffff3` = `0xC000000D`, confirmado en `NTSTATUS.H:1081`).
@@ -873,56 +564,6 @@ iVar1 = func_0x80168610(&_Stack_74.PreviouslyGrantedAccess, DesiredAccess, Point
 Pero el Listing real tiene **4 `push`**, no 3:
 
 ![Listing de Ghidra: las 4 instrucciones PUSH antes del CALL a SeCreateAccessState](img/obopenobjectbyname-ghidra-secreateaccessstate-4-pushes.png)
-
-```
-80125fc4  6a 00              PUSH  0x0
-80125fc6  50                 PUSH  Pointer_ObjectType
-80125fc7  8b 84 24 c0 00 00 00   MOV  Pointer_ObjectType, dword ptr [ESP + DesiredAccess]
-80125fce  50                 PUSH  Pointer_ObjectType
-80125fcf  8d 44 24 50        LEA   Pointer_ObjectType=>local_60, [ESP + 0x50]
-80125fd3  50                 PUSH  Pointer_ObjectType
-                              SeCreateAccessState
-80125fd4  e8 37 26 04 00     CALL  SUB_80168610
-```
-
-**Trampa de lectura:** `Pointer_ObjectType` aparece como nombre en 3 `push` distintos, pero **no es el mismo valor las 3 veces** — Ghidra le puso ese nombre al registro `EAX`, que se reutiliza como scratch. En cada punto vale algo distinto: `0` (el `Pointer_ObjectType` real, sin tocar) → luego se pisa con `DesiredAccess` (`mov`) → luego se vuelve a pisar con `&local_60` (`lea`). El Decompile se comió el primer `push 0x0` porque a `SUB_80168610` todavía no se le fijó una firma (Ghidra adivina el conteo de argumentos).
-
-Orden real (stdcall pushea al revés de la firma en C — el último push es el 1er parámetro):
-
-| Push (orden de ejecución) | Valor real | Parámetro (orden C) |
-|---|---|---|
-| 1. `push 0x0` | `0` | 4to |
-| 2. `push Pointer_ObjectType` | `0` | 3ro |
-| 3. `push Pointer_ObjectType` | `DesiredAccess` | 2do |
-| 4. `push Pointer_ObjectType` | `&local_60` | 1ro |
-
-#### `_ACCESS_STATE _Stack_74` — el offset publicado coincide con el binario real
-
-El Decompile pushea `&_Stack_74.PreviouslyGrantedAccess` como 1er argumento. El Listing lo calcula como `local_60` = `Stack[-0x60]` = `ebp-0x60`. Si `_Stack_74` (la struct completa) arranca en `ebp-0x74`, el campo `PreviouslyGrantedAccess` debería estar en offset `0x74-0x60 = 0x14` dentro de la struct. Contra el layout publicado en `NTDDK.H:6522`:
-
-```
-OperationID              0x00  (LUID, 8 bytes)
-SecurityEvaluated        0x08
-AuditHandleCreation      0x09
-GenerateOnClose          0x0A
-PrivilegesAllocated      0x0B
-Flags                    0x0C  (4 bytes)
-RemainingDesiredAccess   0x10  (4 bytes)
-PreviouslyGrantedAccess  0x14  ← coincide exacto
-```
-
-**Confirmado en vivo:** con el breakpoint puesto antes de la llamada, `db ebp-60` mostró los 4 bytes en `0` — el buffer todavía sin inicializar, coherente con que `SeCreateAccessState` es quien lo llena.
-
-#### Manejo del resultado
-
-```c
-35  if (iVar1 < 0) {
-36      return iVar1;
-37  }
-38  AccessState = (PACCESS_STATE)&_Stack_74.PreviouslyGrantedAccess;
-```
-
-Si `SeCreateAccessState` falla, el error se propaga directo como retorno de `ObOpenObjectByName`. Si no, `AccessState` (la variable local de `ObOpenObjectByName`, que venía `NULL`) pasa a apuntar al `_ACCESS_STATE` recién armado en el stack — se usa desde acá en adelante como si hubiera venido provisto desde afuera.
 
 ### 4. Captura de `ObjectAttributes`, `SecurityDescriptor`, y entrega a `ObpLookupObjectName`
 
@@ -1008,15 +649,3 @@ Libera `unaff_EDI` si se llegó a alocar algo (probablemente un buffer intermedi
 - **`ObpLeaveRootDirectoryMutex`** — libera el mutex que protege el `RootDirectory` (`OBJECT_ATTRIBUTES`, Sección 1) mientras se resolvía el path, solo si se había tomado (`cVar3 != '\0'`).
 - **`SeDeleteAccessState`** — contraparte de limpieza de `SeCreateAccessState` (Sección 3): libera el `ACCESS_STATE` armado en el stack si `ObOpenObjectByName` fue quien lo creó.
 
-Con esto se cierra el reversing completo de `ObOpenObjectByName` — las 9 funciones internas del cuerpo (`SeCreateAccessState`, `ObpCaptureObjectAttributes`, `SeCaptureSecurityDescriptor`, `ObpLookupObjectName`, `ExFreePool`, `ObpCreateHandle`, `ObDereferenceObject`, `ObpLeaveRootDirectoryMutex`, `SeDeleteAccessState`) confirmadas por símbolo en `i386kd`.
-
-**Próximo nivel de la pila:** `ObpLookupObjectName` — la resolución real del objeto por nombre en el namespace del Object Manager.
-
----
-
-## Referencias
-
-- NT DDK octubre 1994 — `ddk_extract/INC/NTDDK.H`, `NTDEF.H`, `NTSTATUS.H`
-- `ntoskrnl.exe` build 3.10.5098.1 — base `0x80100000`
-- Ghidra 11 — Data Type Manager, Parse C Source, Decompile/Listing
-- `i386kd` — debugger kernel NT 3.1, sesión de debug remoto entre `nt31-debugger.img` y `nt31.img` (serial TCP `4555`)
