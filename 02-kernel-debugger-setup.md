@@ -7,14 +7,6 @@ title: Fase 2 — Kernel Debugger
 
 Continuación de [README.md](./README.md) (instalación base de NT 3.1 Advanced Server). Esta fase documenta cómo conectar un kernel debugger real a la VM instalada, para poder verificar en vivo los conceptos que describe *Inside Windows NT* (Helen Custer, 1992).
 
-## Por qué no usamos WinDbg
-
-`WinDbg.exe` es la contraparte gráfica de `I386KD.EXE` — habla el mismo protocolo de debug por debajo, pero no venía incluido con NT 3.1 (se distribuía aparte con el Win32 SDK) y tenía fama de inestable en esa época. `I386KD.EXE` es la herramienta de línea de comandos **nativa** de esta versión, incluida en el propio CD de instalación, y es la que corresponde usar para mantener coherencia con la época del sistema que se está estudiando.
-
-## El problema de origen: NTFS bloquea el método de copia por DOS
-
-Una vez que `C:` se convierte a NTFS durante la instalación, el disquete de MS-DOS (que usamos para copiar los archivos de instalación) deja de servir para transferir archivos nuevos — DOS no sabe leer NTFS. La solución: como NT sí lee disquetes **FAT** sin problema (la conversión a NTFS solo afectó al disco duro, no a medios removibles), se arman los disquetes con las herramientas necesarias directamente en el host Linux, usando `mtools`, y se insertan en la VM ya instalada — sin pasar por DOS en ningún momento.
-
 ## Paso 1: Extraer el contenido del CD en el host
 
 ```bash
@@ -127,8 +119,6 @@ qemu-system-i386 -m 64 -hda nt31.img -M pc,acpi=off -cpu 486 \
 ```
 → En el menú de boot, elegir la entrada con `[DEBUG]`.
 
-**Por qué la VM debugger es el servidor y no la objetivo (cambiado 2026-08-28):** originalmente era al revés (objetivo=servidor, debugger=cliente), siguiendo el orden "natural" de quién depura a quién. Pero en la práctica la VM debugger es la que se deja corriendo largo rato (con `i386kd` ya escuchando), mientras que la VM objetivo es la que se reinicia todo el tiempo durante el trabajo de reversing. Con objetivo=servidor, cada reinicio de la objetivo mataba el socket y dejaba a la debugger con un cliente TCP colgado — greglar esto con `reconnect-ms=<n>` (el reemplazo del deprecado `reconnect=<segundos>`) resultó en un crash reproducible de QEMU 11.1.0 (`SIGABRT`/core dump) cuando el cliente arranca con `reconnect-ms` y todavía no hay nada escuchando del otro lado. Invirtiendo los roles el problema desaparece por completo: la debugger (servidor) puede arrancar sola en cualquier momento sin depender de que la objetivo ya esté arriba, y cada reinicio de la objetivo (cliente) simplemente hace un connect() nuevo contra un socket que ya está escuchando — sin reconnect, sin crash, sin tener que tocar la debugger.
-
 Ejemplo de uso del monitor una vez arriba (capturar pantalla sin la ventana gráfica):
 ```bash
 python3 tools/qemu-monitor.py /home/s1a/WindowsNT3.1/qemu-target.monitor screendump /tmp/target.ppm
@@ -170,17 +160,6 @@ Ctrl+C          (en la ventana del debugger)
 
 Esto detiene la ejecución del kernel remoto en el punto exacto donde estaba, y habilita el prompt interactivo `kd>`.
 
-### Comandos verificados funcionando
-
-| Comando | Qué muestra |
-|---|---|
-| `?` | Lista completa de comandos disponibles |
-| `r` | Estado de los registros de la CPU en el instante del break |
-| `k` | Stack trace (pila de llamadas) actual |
-| `x <módulo>!<patrón>` | Busca símbolos que matchean un patrón (con wildcard `*`) dentro de un módulo — sí depende de símbolos cargados |
-
-> Nota: ni `r` ni `k` requieren símbolos cargados para funcionar (son datos crudos: registros y direcciones en hex). Que ambos funcionen bien **no** es prueba de que los símbolos hayan cargado correctamente — para eso hace falta un comando que sí dependa de ellos, como `ln <dirección>` (ver Fase 3).
-
 Ejemplo de `x` recorriendo el namespace del Object Manager (`nt!_Ob*`) y las syscalls `Nt*` de creación de proceso/hilo/sección — útil para ubicar puntos de entrada antes de reversear una función puntual:
 
 ![x nt!_Ob* listando símbolos del Object Manager](img/kd-x-nt-ob-symbols.png)
@@ -197,18 +176,4 @@ ChildEBP RetAddr
 801ac6ec 80113c02
 801ac6f8 021128ed
 ```
-
-## Notas y problemas menores encontrados
-
-- **Baud rate:** hay reportes conocidos de que algunos emuladores modernos envían datos más rápido de lo esperado a 19200 baudios, causando que el debugger parezca colgado en "waiting to connect". Si pasa, esperar unos segundos antes de asumir fallo.
-- **"waiting to connect..." que nunca progresa (2026-08-28):** distinto del problema de baud rate de arriba — acá el socket TCP está perfectamente conectado (se puede confirmar con `ss -tin`, hay tráfico real en ambas direcciones), pero `i386kd` se queda colgado igual, a veces por minutos. Causa real: el stub de kernel debugger de NT es *pasivo* — no manda un paquete "acá estoy" espontáneamente. Solo completa el handshake del protocolo KD cuando pasa uno de dos eventos: (a) el kernel pega una excepción/breakpoint real, o (b) el debugger manda un pedido explícito de break-in, que es lo que hace `Ctrl+C` en la ventana de `i386kd`. Si la VM objetivo está tranquila (ej. parada en la pantalla de login, sin disparar nada), no hay ningún evento (a) esperando pasar, así que sin mandar `Ctrl+C` una vez el handshake nunca se completa por más que se espere. Confirmación de que esto es lo que pasa: al mandar `Ctrl+C`, el break resultante cae en `NT!_KeUpdateSystemTime+0x109` — la ISR del timer, el primer punto "seguro" donde el kernel revisa si hay un break-in pendiente. **Solución:** después de loguear en la VM debugger y lanzar `i386kd`, si se queda en "waiting to connect..." más de unos segundos, mandar `Ctrl+C` una vez para forzar la sincronización inicial (no hace falta que la VM objetivo esté haciendo nada en particular).
-- **VM debugger con warning al arrancar:** al clonar el disco, la copia puede mostrar *"At least one service or driver failed during system startup"* — es esperable por diferencias mínimas de detección de hardware entre el disco original y la copia; no afecta el uso de `I386KD.EXE`, se puede descartar con OK.
-
-## Estado del lab a partir de acá
-
-✅ NT 3.1 Advanced Server instalado y funcional
-✅ Kernel debugger (`I386KD.EXE`) conectado entre dos VMs vía serial virtual
-✅ Símbolos de kernel (`NTOSKRNL.DBG`) y HAL (`HAL.DBG`) cargados
-✅ Break manual funcional, registros y stack trace verificados
-
 
