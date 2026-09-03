@@ -871,6 +871,8 @@ while( true ) {
     }
 ```
 
+![Ghidra: el bucle de recorrido con las variables renombradas y los slots retipados como UNICODE_STRING](img/obplookupobjectname-ghidra-loop-renamed.png)
+
 Cada vuelta consume **un componente**: saltea la `\`, avanza hasta la siguiente, y calcula el largo por resta (`TotalLength` antes menos lo que quedó después). Si el componente sale vacío — dos barras seguidas, o una barra al final — corta con `STATUS_OBJECT_NAME_INVALID` (`0xc0000033`, `NTSTATUS.H:1458`).
 
 Sobre `\DosDevices\C:\users\default`, la primera vuelta recorta `DosDevices`, la segunda `C:`, y así.
