@@ -658,12 +658,12 @@ NTSTATUS ObpLookupObjectName(
     PSECURITY_QUALITY_OF_SERVICE  SecurityQos,
     PVOID                         InsertObject,
     PACCESS_STATE                 AccessState,
-    PVOID                         LookupContext,
+    PBOOLEAN                      LookupContext,
     PVOID                        *FoundObject
 );
 ```
 
-Los nombres y tipos provienen de la literatura pública de NT (versiones posteriores), **no del DDK de 1994**. Lo que sí está confirmado contra este binario es el conteo de parámetros y, para varios de ellos, su valor y rol en vivo.
+Los nombres y tipos provienen de la literatura pública de NT (versiones posteriores), **no del DDK de 1994**. Lo que sí está confirmado contra este binario es el conteo de parámetros y, para varios de ellos, su valor y rol en vivo. El parámetro 10 está retipado a `PBOOLEAN` respecto de esa firma pública, por lo que se ve en el prólogo (ver más abajo).
 
 ### Los 11 parámetros, leídos en vivo
 
@@ -688,15 +688,43 @@ fbce9d50  00 00 00 00 a4 9d ce fb-73 9d ce fb 74 9d ce fb
 | 7 | `SecurityQos` | `NULL` | sin QoS de impersonation |
 | 8 | `InsertObject` | `NULL` | se busca un nombre existente, no se publica un objeto nuevo |
 | 9 | `AccessState` | `0xfbce9da4` | el `ACCESS_STATE` armado por `SeCreateAccessState` |
-| 10 | `LookupContext` | `0xfbce9d73` | salida |
-| 11 | `FoundObject` | `0xfbce9d74` | salida |
+| 10 | `LookupContext` | `0xfbce9d73` | salida, **1 byte** |
+| 11 | `FoundObject` | `0xfbce9d74` | salida, dword |
 
 Detalles que valen la pena:
 
 - **`AccessMode` (5)** — `KPROCESSOR_MODE` es un `CCHAR` de 1 byte, pero se pushea como dword completo: los 3 bytes altos son restos del registro (acá `0x0012f6`, del stack de usermode del proceso llamante). Solo el byte bajo tiene significado.
 - **`ParseContext` (6)** — apunta a memoria cuyo contenido arranca con `08 00 40 00`: `Type = 0x0008` (`IO_TYPE_OPEN_PACKET`) y `Size = 0x0040` (64 bytes). Confirmación en vivo del `OPEN_PACKET` que reconstruimos estáticamente en la Parte 2, Sección 11.
 - **`AccessState` (9)** — la dirección coincide exactamente con la que calcula `lea esi,[esp+0x44]` en `ObOpenObjectByName` (`80125fe1`), justo antes de la llamada.
-- **`LookupContext` (10) y `FoundObject` (11)** — las dos direcciones están a **1 byte** de distancia (`…73` y `…74`), lo que descarta que sean dos punteros de 4 bytes: se pisarían. Pintan como dos salidas de 1 byte. **Sin confirmar** — es el primer punto donde la firma de versiones posteriores no encaja con este build.
+- **`LookupContext` (10) y `FoundObject` (11)** — las dos direcciones están a **1 byte** de distancia (`…73` y `…74`), lo que a primera vista parecería un solapamiento entre dos punteros de 4 bytes. El prólogo lo aclara (ver abajo).
+
+### El prólogo: dos salidas de ancho distinto
+
+Lo primero que hace la función, apenas termina de reservar el frame, es poner en cero los dos parámetros de salida — y lo hace con **anchos distintos**:
+
+```asm
+80125596  83 ec 30           sub   esp,0x30
+80125599  53 56 57 55        push  ebx / esi / edi / ebp     ; corrimiento total: 0x40
+8012559d  c7 44 24 20 ...    mov   DWORD PTR [esp+0x20],0x0
+801255a5  8b 44 24 68        mov   eax,[esp+0x68]            ; param 10 — LookupContext
+801255a9  c7 44 24 28 ...    mov   DWORD PTR [esp+0x28],0x20
+801255b1  8b 4c 24 6c        mov   ecx,[esp+0x6c]            ; param 11 — FoundObject
+801255b5  c6 00 00           mov   BYTE  PTR [eax],0x0       ; *LookupContext = 0   ← 1 byte
+801255b8  c7 01 00 00 00 00  mov   DWORD PTR [ecx],0x0       ; *FoundObject   = 0   ← 4 bytes
+```
+
+Con el corrimiento de `0x40` del prólogo, el parámetro *n* queda en `[esp + 0x40 + 4n]`: `[esp+0x68]` es el 10 y `[esp+0x6c]` es el 11.
+
+**Conclusión:** el parámetro 10 apunta a un valor de **un solo byte** (`BOOLEAN`), no a una estructura. Por eso las dos direcciones pueden estar pegadas sin pisarse: `…73` es el byte del param 10 y `…74` arranca el dword del param 11. Esto **descarta para NT 3.1** el `POBP_LOOKUP_CONTEXT` que figura en la firma de versiones posteriores.
+
+La instrucción siguiente ya es el primer branch de la función:
+
+```asm
+801255ce  83 7c 24 44 00     cmp   DWORD PTR [esp+0x44],0x0  ; param 1 — RootDirectory
+801255d3  0f 84 bd 02 00 00  je    +0x2bd
+```
+
+Compara `RootDirectory` contra `NULL`. En la corrida capturada es `NULL`, así que toma el salto: el camino de resolución desde la raíz del namespace.
 
 ### `UNICODE_STRING` — el descriptor del nombre
 
