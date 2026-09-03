@@ -839,3 +839,62 @@ e10074d8  69 00 6f 00 6e 00 31 00                           i.o.n.1.
 **`\Device\Harddisk0\Partition1`** — el nombre NT real del volumen, o sea el destino al que apunta el symbolic link `C:`. Es el paso que describimos antes en teoría, ahora visto en memoria: el Object Manager entra a `\DosDevices`, encuentra el link `C:`, lo sigue hasta este device object, y de ahí en adelante el resto del path (`\users\default`) ya no es asunto suyo — se lo entrega al filesystem.
 
 > Ni `OBJECT_HEADER` ni `OBJECT_DIRECTORY` están publicadas en el DDK de 1994: son internas del Object Manager. La lectura de "tabla de buckets" y de la cadena de entradas es **inferida** del patrón de los dumps, no confirmada contra un header.
+
+### El bucle: un componente del path por vuelta
+
+Con `RootDirectory` en `NULL`, el efecto neto de todo el bloque anterior es **uno solo**: dejar el directorio de partida (`ObpRootDirectoryObject`) en una variable local. El resto eran validaciones que, o abortan, o dejan pasar. De ahí el flujo salta a `80125712`, donde empieza el recorrido real.
+
+Dos retipados en Ghidra hacen legible este tramo: los slots `[esp+0x30]` y `[esp+0x38]` son en realidad dos `UNICODE_STRING` locales (el compilador copia `Length`+`MaximumLength` con un solo `mov` de 32 bits, y sin el tipo correcto Ghidra lo muestra como una maraña de `CONCAT22`). Retipados, el bucle queda así:
+
+```c
+RemainingName.Length        = ObjectName->Length;
+RemainingName.MaximumLength = ObjectName->MaximumLength;
+RemainingName.Buffer        = ObjectName->Buffer;
+while( true ) {
+    ParentDirectory = CurrentDirectory;
+    if (*RemainingName.Buffer == L'\\') {          // saltear la barra separadora
+      RemainingName.Buffer = RemainingName.Buffer + 1;
+      RemainingName.Length = RemainingName.Length - 2;
+    }
+    ComponentName.Buffer = RemainingName.Buffer;   // acá arranca el componente
+    TotalLength = RemainingName.Length;
+    RemainingLength = TotalLength;
+    for (; (RemainingLength != 0 && (*RemainingName.Buffer != L'\\'));
+           RemainingName.Buffer = RemainingName.Buffer + 1) {
+      RemainingLength = RemainingName.Length - 2;  // avanzar hasta la próxima barra
+      RemainingName.Length = RemainingLength;
+    }
+    ComponentName.Length = TotalLength - RemainingName.Length;
+    if (ComponentName.Length == 0) {
+      Status = 0xc0000033;                          // STATUS_OBJECT_NAME_INVALID
+      goto LAB_80125bb7;
+    }
+```
+
+Cada vuelta consume **un componente**: saltea la `\`, avanza hasta la siguiente, y calcula el largo por resta (`TotalLength` antes menos lo que quedó después). Si el componente sale vacío — dos barras seguidas, o una barra al final — corta con `STATUS_OBJECT_NAME_INVALID` (`0xc0000033`, `NTSTATUS.H:1458`).
+
+Sobre `\DosDevices\C:\users\default`, la primera vuelta recorta `DosDevices`, la segunda `C:`, y así.
+
+### `LookupContext` es un flag de mutex, no un contexto
+
+Justo después, el bucle hace:
+
+```c
+    if (*_LookupContext == '\0') {
+      *_LookupContext = '\x01';
+      ObpEnterRootDirectoryMutex();
+      CurrentDirectory = StartDirectory;
+    }
+```
+
+Y en la salida está la operación simétrica:
+
+```asm
+80125a83  call NT!_ObpLeaveRootDirectoryMutex (80129966)
+80125a88  mov  eax,[esp+0x68]      ; LookupContext
+80125a8c  mov  BYTE PTR [eax],bl   ; = 0
+```
+
+Las dos funciones confirmadas por símbolo en `i386kd`: `ObpEnterRootDirectoryMutex` (`80129946`) y `ObpLeaveRootDirectoryMutex` (`80129966`) — contiguas en el binario, el patrón típico de un par enter/leave.
+
+Esto le da el significado real al parámetro 10: **no es un "contexto de lookup" genérico, es el booleano *"tengo tomado el mutex del directorio raíz"***. Se pone en `1` al tomarlo y en `0` al soltarlo, y `ObOpenObjectByName` lo lee al volver para saber si le toca liberar. Encaja exactamente con el retipado a `PBOOLEAN` que ya habíamos deducido del ancho de las escrituras: un nombre más honesto para ese parámetro sería `RootMutexHeld`.
