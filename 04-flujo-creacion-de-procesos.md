@@ -766,3 +766,33 @@ La resolución de `\DosDevices\C:\users\default` es entonces:
 Ese paso 4 es el mecanismo central: el Object Manager no sabe nada de archivos — camina el namespace hasta que un tipo de objeto reclama el resto del path.
 
 *(En NT 3.1 `\DosDevices` es un directorio real. En versiones posteriores esto se reorganizó a `\??` y a `\Sessions\N\DosDevices\…` por sesión.)*
+
+### Validación del nombre y el caso especial `"\"`
+
+Dentro de la rama de `RootDirectory == NULL`, lo primero es validar que el nombre sea un path absoluto usable:
+
+![Ghidra: validación del ObjectName y la rama del nombre raíz en ObpLookupObjectName](img/obplookupobjectname-ghidra-rootname-branch.png)
+
+```asm
+8012589f  mov  eax,[esp+0x48]        ; param 2 = ObjectName
+801258a3  mov  cx,WORD PTR [eax]     ; cx = ObjectName->Length
+801258a6  or   cx,cx
+801258a9  je   80125c00              ; ① Length == 0        → error
+801258af  mov  eax,[eax+0x4]         ; eax = ObjectName->Buffer
+801258b2  or   eax,eax
+801258b4  je   80125c00              ; ② Buffer == NULL     → error
+801258ba  cmp  WORD PTR [eax],0x5c
+801258be  jne  80125c00              ; ③ no arranca con '\' → error
+801258c4  cmp  cx,0x2
+801258c8  jne  80125712              ; ④ ¿el nombre es solo "\"?
+```
+
+Los tres errores van al mismo epílogo, que retorna `0xc000003b` (`STATUS_OBJECT_PATH_SYNTAX_BAD`). El chequeo ③ compara **un solo `WCHAR`** contra `0x5c` (`'\'`): exige path absoluto.
+
+En la corrida capturada, con `ObjectName = "\DosDevices\C:\users\default"`, ninguno se dispara: `Length = 0x38`, `Buffer = 0xe11c4e88`, primer carácter `'\'`.
+
+**El chequeo ④ y su rama no se recorren en este análisis.** `Length` está en *bytes* y cada carácter UTF-16 ocupa 2, así que `Length == 2` significa que el nombre es exactamente `"\"` — la raíz pelada. Ese caso especial no resuelve ningún path: toma el objeto que corresponda (el directorio raíz, o el que venga en `InsertObject`), lo pasa por `ObReferenceObjectByPointer` — documentada en `NTDDK.H:8882`, valida el tipo si se le da uno e **incrementa el refcount** — y lo devuelve en `FoundObject`. Si el nombre es `"\"` y no hay `InsertObject`, retorna `0xc000000d` (`STATUS_INVALID_PARAMETER`).
+
+Nuestro nombre mide `0x38`, así que salta a `80125712`: el recorrido real del path componente por componente.
+
+> Nota de lectura sobre la captura: las líneas `SececurityQos->Length = ...` son una **mala atribución del decompiler**. El assembly escribe en `*FoundObject` (`mov ecx,[esp+0x6c]` seguido de `mov [ecx],eax`), no en un campo de `SecurityQos`.
