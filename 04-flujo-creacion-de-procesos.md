@@ -634,3 +634,107 @@ Libera `unaff_EDI` si se llegó a alocar algo (probablemente un buffer intermedi
 - **`ObpLeaveRootDirectoryMutex`** — libera el mutex que protege el `RootDirectory` (`OBJECT_ATTRIBUTES`, Sección 1) mientras se resolvía el path, solo si se había tomado (`cVar3 != '\0'`).
 - **`SeDeleteAccessState`** — contraparte de limpieza de `SeCreateAccessState` (Sección 3): libera el `ACCESS_STATE` armado en el stack si `ObOpenObjectByName` fue quien lo creó.
 
+
+---
+
+## Parte 4 — ObpLookupObjectName
+
+Es la función a la que `ObOpenObjectByName` le entrega todo lo preparado: la resolución real del path en el namespace del Object Manager.
+
+**Dirección:** `0x80125596` · **Tamaño:** `0x680` (1664 bytes) · **Volcado:** `code/dumps/obplookupobjectname.bin`
+
+Es una función **FPO** (sin frame de `ebp`): el prólogo es `sub esp,0x30` + `push ebx/esi/edi/ebp`, y todo el direccionamiento va relativo a `esp`. Los 10 `ret 0x2c` del binario (`0x2c` = 44 bytes = 11 dwords) confirman **11 parámetros stdcall**, coincidiendo con los 11 argumentos del call site.
+
+### Firma
+
+```c
+NTSTATUS ObpLookupObjectName(
+    HANDLE                        RootDirectory,
+    PUNICODE_STRING               ObjectName,
+    ULONG                         Attributes,
+    POBJECT_TYPE                  ObjectType,
+    KPROCESSOR_MODE               AccessMode,
+    PVOID                         ParseContext,
+    PSECURITY_QUALITY_OF_SERVICE  SecurityQos,
+    PVOID                         InsertObject,
+    PACCESS_STATE                 AccessState,
+    PVOID                         LookupContext,
+    PVOID                        *FoundObject
+);
+```
+
+Los nombres y tipos provienen de la literatura pública de NT (versiones posteriores), **no del DDK de 1994**. Lo que sí está confirmado contra este binario es el conteo de parámetros y, para varios de ellos, su valor y rol en vivo.
+
+### Los 11 parámetros, leídos en vivo
+
+Parando en la entrada de la función, con la dirección de retorno en `[esp+0x00]`, cada parámetro *n* queda en `[esp + 4n]`:
+
+```
+kd> db esp+30
+fbce9d30  96 60 12 80 00 00 00 00-84 9d ce fb 40 00 00 00
+fbce9d40  00 00 00 00 01 f6 12 00-30 9e ce fb 00 00 00 00
+fbce9d50  00 00 00 00 a4 9d ce fb-73 9d ce fb 74 9d ce fb
+```
+
+| # | Parámetro | Valor | Significado |
+|---|---|---|---|
+| — | *return address* | `80126096` | instrucción siguiente al `call` en `ObOpenObjectByName` |
+| 1 | `RootDirectory` | `NULL` | sin ancla relativa → el path se resuelve desde la raíz `\` |
+| 2 | `ObjectName` | `0xfbce9d84` | puntero a la `UNICODE_STRING` capturada |
+| 3 | `Attributes` | `0x40` | `OBJ_CASE_INSENSITIVE` |
+| 4 | `ObjectType` | `NULL` | no se fuerza tipo: resuelve a lo que el nombre encuentre |
+| 5 | `AccessMode` | `0x0012f6`**`01`** | byte bajo `01` = `UserMode` |
+| 6 | `ParseContext` | `0xfbce9e30` | el `OPEN_PACKET` armado por `IoCreateFile` |
+| 7 | `SecurityQos` | `NULL` | sin QoS de impersonation |
+| 8 | `InsertObject` | `NULL` | se busca un nombre existente, no se publica un objeto nuevo |
+| 9 | `AccessState` | `0xfbce9da4` | el `ACCESS_STATE` armado por `SeCreateAccessState` |
+| 10 | `LookupContext` | `0xfbce9d73` | salida |
+| 11 | `FoundObject` | `0xfbce9d74` | salida |
+
+Detalles que valen la pena:
+
+- **`AccessMode` (5)** — `KPROCESSOR_MODE` es un `CCHAR` de 1 byte, pero se pushea como dword completo: los 3 bytes altos son restos del registro (acá `0x0012f6`, del stack de usermode del proceso llamante). Solo el byte bajo tiene significado.
+- **`ParseContext` (6)** — apunta a memoria cuyo contenido arranca con `08 00 40 00`: `Type = 0x0008` (`IO_TYPE_OPEN_PACKET`) y `Size = 0x0040` (64 bytes). Confirmación en vivo del `OPEN_PACKET` que reconstruimos estáticamente en la Parte 2, Sección 11.
+- **`AccessState` (9)** — la dirección coincide exactamente con la que calcula `lea esi,[esp+0x44]` en `ObOpenObjectByName` (`80125fe1`), justo antes de la llamada.
+- **`LookupContext` (10) y `FoundObject` (11)** — las dos direcciones están a **1 byte** de distancia (`…73` y `…74`), lo que descarta que sean dos punteros de 4 bytes: se pisarían. Pintan como dos salidas de 1 byte. **Sin confirmar** — es el primer punto donde la firma de versiones posteriores no encaja con este build.
+
+### `UNICODE_STRING` — el descriptor del nombre
+
+Confirmado en `NTDEF.H:620`:
+
+```c
+typedef struct _UNICODE_STRING {
+    USHORT Length;         // +0x00  bytes usados (no caracteres)
+    USHORT MaximumLength;  // +0x02  capacidad del buffer, en bytes
+    PWSTR  Buffer;         // +0x04  puntero a los caracteres UTF-16
+} UNICODE_STRING;
+```
+
+El puntero no es el texto: es este descriptor de 8 bytes. Leído en vivo:
+
+```
+kd> dd fbce9d84 L2
+fbce9d84  003a0038 e11c4e88
+
+kd> du e11c4e88
+e11c4e88   "\DosDevices\C:\users\default"
+```
+
+- `Length = 0x0038` = 56 bytes = **28 caracteres** — los mismos 28 del path. Cierra exacto.
+- `MaximumLength = 0x003a` = 58 bytes: los 56 más 2 para el terminador nulo.
+- `Buffer = 0xe11c4e88` — rango de **paged pool**, coherente con que `ObpCaptureObjectAttributes` copia el nombre desde usermode a memoria del kernel.
+
+### Qué es `\DosDevices`
+
+El directorio del namespace donde viven los nombres al estilo DOS/Win32 (`C:`, `A:`, `COM1:`, `NUL`). No son dispositivos: son objetos **symbolic link** que apuntan al nombre NT real del device.
+
+La resolución de `\DosDevices\C:\users\default` es entonces:
+
+1. Arranca en `\` (porque `RootDirectory` es `NULL`).
+2. Entra al directorio `\DosDevices`.
+3. Encuentra el symbolic link `C:` y lo sigue hasta el device object del volumen.
+4. Al llegar a un objeto cuyo tipo tiene `ParseProcedure` (el device del filesystem), le entrega el **resto del path** (`\users\default`) junto con el `ParseContext`.
+
+Ese paso 4 es el mecanismo central: el Object Manager no sabe nada de archivos — camina el namespace hasta que un tipo de objeto reclama el resto del path.
+
+*(En NT 3.1 `\DosDevices` es un directorio real. En versiones posteriores esto se reorganizó a `\??` y a `\Sessions\N\DosDevices\…` por sesión.)*
