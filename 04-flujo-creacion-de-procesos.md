@@ -796,3 +796,46 @@ En la corrida capturada, con `ObjectName = "\DosDevices\C:\users\default"`, ning
 Nuestro nombre mide `0x38`, así que salta a `80125712`: el recorrido real del path componente por componente.
 
 > Nota de lectura sobre la captura: las líneas `SececurityQos->Length = ...` son una **mala atribución del decompiler**. El assembly escribe en `*FoundObject` (`mov ecx,[esp+0x6c]` seguido de `mov [ecx],eax`), no en un campo de `SecurityQos`.
+
+### El namespace por dentro: del directorio raíz al destino del symlink
+
+`[esp+0x24]` guarda el **puntero** al objeto directorio raíz, no el objeto. La global se puede leer directo, sin depender de dónde esté parada la ejecución:
+
+```
+kd> dd 8019c0e8 L1     ; ObpRootDirectoryObject
+```
+
+Con ese puntero, el cuerpo del objeto es una **tabla de buckets de hash**: dwords, muchos en cero y el resto apuntando a paged pool (`e1xxxxxx`). Cada entrada no nula encabeza una cadena de objetos cuyo nombre hashea a ese bucket.
+
+![kd: tabla de buckets del directorio raíz, entradas del namespace y el destino del symbolic link](img/obplookupobjectname-kd-namespace-buckets.png)
+
+```
+fe7f4bf0  00 00 00 00 e8 f6 15 e1-c8 7e 00 e1 00 00 00 00
+fe7f4c00  00 00 00 00 68 76 00 e1-08 1d 1b e1 00 00 00 00
+fe7f4c10  a8 7e 00 e1 88 f0 15 e1-00 00 00 00 c8 06 00 e1
+fe7f4c20  c8 10 10 e1 c8 17 1b e1-08 11 10 e1 a8 60 10 e1
+```
+
+Siguiendo uno de esos punteros aparecen las entradas del directorio, con los nombres legibles en UTF-16 entremezclados con los punteros de la cadena:
+
+```
+e1000728  e8 07 00 e1 d0 09 7f fe-74 00 65 00 6d 00 52 00   ........t.e.m.R.
+e1000738  6f 00 6f 00 74 00 00 00-20 00 22 00 00 00 00 00   o.o.t... ."....
+e1000748  00 00 00 00 70 14 7f fe-75 00 72 00 69 00 74 00   ....p...u.r.i.t.
+e1000758  79 00 00 00                                       y...
+```
+
+Se leen las colas de `SystemRoot` y de `Security` — objetos de primer nivel del namespace.
+
+Y siguiendo otra entrada se llega al dato que cierra el círculo de `\DosDevices\C:`:
+
+```
+e10074a8  5c 00 44 00 65 00 76 00-69 00 63 00 65 00 5c 00   \.D.e.v.i.c.e.\.
+e10074b8  48 00 61 00 72 00 64 00-64 00 69 00 73 00 6b 00   H.a.r.d.d.i.s.k.
+e10074c8  30 00 5c 00 50 00 61 00-72 00 74 00 69 00 74 00   0.\.P.a.r.t.i.t.
+e10074d8  69 00 6f 00 6e 00 31 00                           i.o.n.1.
+```
+
+**`\Device\Harddisk0\Partition1`** — el nombre NT real del volumen, o sea el destino al que apunta el symbolic link `C:`. Es el paso que describimos antes en teoría, ahora visto en memoria: el Object Manager entra a `\DosDevices`, encuentra el link `C:`, lo sigue hasta este device object, y de ahí en adelante el resto del path (`\users\default`) ya no es asunto suyo — se lo entrega al filesystem.
+
+> Ni `OBJECT_HEADER` ni `OBJECT_DIRECTORY` están publicadas en el DDK de 1994: son internas del Object Manager. La lectura de "tabla de buckets" y de la cadena de entradas es **inferida** del patrón de los dumps, no confirmada contra un header.
